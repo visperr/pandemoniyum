@@ -1,6 +1,6 @@
-# PANdeminiYUM Motion Tracking Engine
+# PANdemoniYUM Motion Tracking Engine
 
-This is the standalone Python tracking backend for PANdeminiYUM[cite: 3]. It utilizes MediaPipe Tasks API to perform multi-modal tracking (Face, Pose, Hand/Gesture) for up to 2 simultaneous users and broadcasts the cleaned data via UDP to Unity.
+This is the standalone Python tracking backend for PANdemoniYUM[cite: 3]. It utilizes MediaPipe Tasks API to perform multi-modal tracking (Face, Pose, Hand/Gesture) for up to 2 simultaneous users and broadcasts the cleaned data via UDP to Unity.
 
 ## Setup Instructions (Development)
 1. Ensure Python 3.10+ is installed.

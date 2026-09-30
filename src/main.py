@@ -80,7 +80,7 @@ def main(preview: bool = None):
                     for lm in hand:
                         cv2.circle(image, (int(lm.x * width), int(lm.y * height)), 3, (0, 0, 255), -1)
 
-            cv2.imshow('PANdeminiYUM Tracker', image)
+            cv2.imshow('PANdemoniYUM Tracker', image)
             if cv2.waitKey(5) & 0xFF == 27:  # ESC
                 break
 
