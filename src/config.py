@@ -1,17 +1,15 @@
-# Network
+# Network Configuration
 UDP_IP = "127.0.0.1"
 UDP_PORT = 5005
 
-# Camera
+# Display & Debug
+SHOW_PREVIEW = True
+DEBUG_MODE = True
 CAMERA_INDEX = 0
-CAMERA_WIDTH = 640
-CAMERA_HEIGHT = 360
-TARGET_FPS = 30
 
-# Inference Settings (Configured for 2 Persons)
-NUM_FACES = 2
-NUM_POSES = 2
-NUM_HANDS = 4 # 2 persons * 2 hands
+# Asset Paths
+MODEL_DIR = "../models_data"
 
-# Paths
-MODEL_DIR = "../models_data/"
+# Tracker Parameters
+FACE_NUM_FACES = 1
+FACE_MIN_CONFIDENCE = 0.5
