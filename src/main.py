@@ -3,25 +3,27 @@ import json
 import argparse
 import mediapipe as mp
 import config
+import time
 from network.udp_sender import UDPSender
-from processors.data_packer import DataPacker
+from core.data_packer import DataPacker
 from trackers.face_tracker import FaceTracker
 from trackers.pose_tracker import PoseTracker
 from trackers.gesture_tracker import GestureTracker
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="PANdemoniYUM Tracking Engine")
-    parser.add_argument('-p', '--preview', action='store_true',
-                        help="Show the OpenCV camera preview window with visualizer")
+    parser = argparse.ArgumentParser(description="PANdeminiYUM Tracking Engine")
+    parser.add_argument('-p', '--preview', action='store_true', help="Show the OpenCV camera preview window")
+    parser.add_argument('-d', '--debug', action='store_true', help="Print the JSON payload to the terminal (throttled)")
     return parser.parse_args()
 
 
-def main(preview: bool = None):
+def main(preview: bool = None, debug: bool = None):
     # If not explicitly passed in code, read from CLI arguments
     if preview is None:
         args = parse_args()
         preview = args.preview
+        debug = args.debug
 
     # Initialize Modules
     sender = UDPSender(config.UDP_IP, config.UDP_PORT)
@@ -39,6 +41,9 @@ def main(preview: bool = None):
     if preview:
         print("Preview mode enabled. Press ESC in the video window to stop.")
 
+    # Timer for throttling console output
+    last_print_time = 0.0
+
     while cap.isOpened():
         success, image = cap.read()
         if not success:
@@ -47,18 +52,35 @@ def main(preview: bool = None):
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
 
-        # 1. Run Inference
+        # Inference step
         face_res = face_tracker.process(mp_image)
         pose_res = pose_tracker.process(mp_image)
         gesture_res = gesture_tracker.process(mp_image)
 
-        # 2. Package Data
-        payload = packer.package_frame(face_res, pose_res, gesture_res)
+        # 1. Produce strongly typed object model
+        tracking_frame = packer.package_frame(face_res, pose_res, gesture_res)
 
-        # 3. Transmit
-        sender.send(json.dumps(payload))
+        # 2. Object manipulation example (e.g. gameplay triggers or smoothing in Python)
+        for player in tracking_frame.players:
+            if player.is_tracked:
+                right_hand = player.hands.get("Right")
+                if right_hand and right_hand.grab_score > 0.8:
+                    # Python-side state logic can be added here
+                    pass
 
-        # 4. Render Preview (Alleen als de flag is meegegeven)
+        # 3. Convert to dictionary and transmit
+        payload_dict = tracking_frame.to_dict()
+        sender.send(json.dumps(payload_dict))
+
+        if debug:
+            current_time = time.time()
+            if current_time - last_print_time >= 1.0:  # Print once per second
+                # Clear the terminal screen (works on Windows/Linux/Mac)
+                print('\033[2J\033[H', end='')
+                print(f"--- Live Payload Preview (Frame: {tracking_frame.frame_index}) ---")
+                print(json.dumps(payload_dict, indent=2))
+                last_print_time = current_time
+
         if preview:
             height, width, _ = image.shape
 
@@ -95,4 +117,4 @@ def main(preview: bool = None):
 
 
 if __name__ == "__main__":
-    main(preview=True)
+    main(preview=True, debug=True)

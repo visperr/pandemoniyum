@@ -21,3 +21,4 @@ class FaceTracker:
 
     def close(self):
         self.detector.close()
+
