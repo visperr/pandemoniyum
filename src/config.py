@@ -11,5 +11,8 @@ CAMERA_INDEX = 0
 MODEL_DIR = "../models_data"
 
 # Tracker Parameters
+
+# FACE
 FACE_NUM_FACES = 1
 FACE_MIN_CONFIDENCE = 0.5
+FACE_BLENDSHAPES = ['jawOpen']

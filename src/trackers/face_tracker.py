@@ -9,7 +9,11 @@ from core.base_tracker import BaseTracker
 from models.face_data import FaceTrackingData
 
 class FaceTracker(BaseTracker):
-    def __init__(self, model_dir: str, num_faces: int = 1, min_tracking_confidence: float = 0.5):
+    def __init__(self, model_dir: str, num_faces: int = 1, min_tracking_confidence: float = 0.5, blendshapes=None):
+        if blendshapes is None:
+            self.blendshapes = []
+        else:
+            self.blendshapes = blendshapes
         self.num_faces = num_faces
         self.min_tracking_confidence = min_tracking_confidence
         self.last_result = None
@@ -40,6 +44,7 @@ class FaceTracker(BaseTracker):
         blendshapes = {
             category.category_name: category.score
             for category in self.last_result.face_blendshapes[0]
+            if category.category_name in self.blendshapes
         }
 
         matrix = self.last_result.facial_transformation_matrixes[0].flatten().tolist()

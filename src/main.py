@@ -24,7 +24,8 @@ def main():
     face_tracker = FaceTracker(
         model_dir=model_dir,
         num_faces=config.FACE_NUM_FACES,
-        min_tracking_confidence=config.FACE_MIN_CONFIDENCE
+        min_tracking_confidence=config.FACE_MIN_CONFIDENCE,
+        blendshapes=config.FACE_BLENDSHAPES
     )
 
     cap = cv2.VideoCapture(config.CAMERA_INDEX)
