@@ -14,14 +14,14 @@ sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 # 2. Configure Models
 face_detector = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
-    base_options=python.BaseOptions(model_asset_path='inference_models/face_landmarker.task'),
+    base_options=python.BaseOptions(model_asset_path='models_data/face_landmarker.task'),
     output_face_blendshapes=True, output_facial_transformation_matrixes=True, num_faces=1))
 
 pose_detector = vision.PoseLandmarker.create_from_options(vision.PoseLandmarkerOptions(
-    base_options=python.BaseOptions(model_asset_path='inference_models/pose_landmarker_lite.task'), num_poses=1))
+    base_options=python.BaseOptions(model_asset_path='models_data/pose_landmarker_lite.task'), num_poses=1))
 
 hand_detector = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
-    base_options=python.BaseOptions(model_asset_path='inference_models/hand_landmarker.task'), num_hands=2))
+    base_options=python.BaseOptions(model_asset_path='models_data/hand_landmarker.task'), num_hands=2))
 
 
 # Helper to calculate grab score
@@ -42,7 +42,9 @@ print(f"Broadcasting to {UDP_IP}:{UDP_PORT}... Press ESC in the video window to 
 
 while cap.isOpened():
     success, image = cap.read()
-    if not success: continue
+    if not success:
+        print("Error: Could not read a frame. The camera stream is empty or blocked.")
+        break
 
     height, width, _ = image.shape
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
