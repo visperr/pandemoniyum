@@ -11,7 +11,7 @@ from trackers.gesture_tracker import GestureTracker
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="PANdeminiYUM Tracking Engine")
+    parser = argparse.ArgumentParser(description="PANdemoniYUM Tracking Engine")
     parser.add_argument('-p', '--preview', action='store_true',
                         help="Show the OpenCV camera preview window with visualizer")
     return parser.parse_args()
