@@ -7,6 +7,7 @@ import config
 from core.data_packer import DataPacker
 from core.network_streamer import UDPStreamer
 from trackers.face_tracker import FaceTracker
+from trackers.person_tracker import PersonTracker
 
 
 def get_asset_path(relative_path: str) -> str:
@@ -38,6 +39,11 @@ def main():
         blendshapes=config.FACE_BLENDSHAPES
     )
 
+    person_tracker = PersonTracker(
+        model_dir=model_dir,
+        num_persons=config.PERSON_NUM_PERSONS,
+    )
+
     cap = open_video_capture()
 
     print("Tracking pipeline started. Press 'q' to exit.")
@@ -53,10 +59,12 @@ def main():
             frame = cv2.flip(frame, 1)
 
             # 1. Process tracking components
-            face_data = face_tracker.process_frame(frame)
+            # face_data = face_tracker.process_frame(frame)
+            scene_data = person_tracker.process_frame(frame)
 
             # 2. Add tracking models incrementally
-            packer.add(face_data)
+            #packer.add(face_data)
+            packer.add(scene_data)
             # packer.add(gesture_data) # Ready for other modules
 
             # 3. Serialise and send accumulated payload
@@ -71,7 +79,8 @@ def main():
             # 5. Preview and Debug overlay
             if config.SHOW_PREVIEW:
                 if config.DEBUG_MODE:
-                    face_tracker.draw_debug(frame)
+                    # face_tracker.draw_debug(frame)
+                    person_tracker.draw_debug(frame)
 
                     curr_time = time.time()
                     fps = 1.0 / (curr_time - prev_time) if prev_time > 0 else 0.0
