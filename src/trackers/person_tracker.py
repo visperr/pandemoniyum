@@ -205,14 +205,16 @@ class PersonTracker(BaseTracker):
 
         return scene_data
 
-    def draw_debug(self, frame: np.ndarray) -> None:
+    def draw_debug(self, frame: np.ndarray, notes: dict[int, str]) -> None:
         if self.last_data is None:
             pass
 
         for player in self.last_data:
             color = utils.player_color_from_id(player.id)
+
+            note = notes[player.id] if player.id in notes else ""
             
-            status_str = f"Player {player.id}" + (" [LOCKED]" if player.is_occluded else "")
+            status_str = f"Player {player.id} " + ("[LOCKED] " if player.is_occluded else "") + note
             
             cv2.rectangle(frame, (player.x1, player.y1), (player.x2, player.y2), color, 2)
             cv2.putText(frame, status_str, (player.x1, player.y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)

@@ -41,3 +41,8 @@ def player_color_from_id(player_id) -> tuple[int, int, int]:
 
     colors = [(0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255)]
     return colors[(player_id - 1) % len(colors)]
+
+
+def landmark_to_point(landmark: dict, w: int, h: int) -> tuple[int, int]:
+    return (int(landmark.x * w), int(landmark.y * h))
+
