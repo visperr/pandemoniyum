@@ -5,7 +5,11 @@ UDP_PORT = 5005
 # Display & Debug
 SHOW_PREVIEW = True
 DEBUG_MODE = True
+
+# Video source selection
+USE_CAMERA = True
 CAMERA_INDEX = 0
+VIDEO_PATH = "../WIN_20260923_15_21_55_Pro.mp4"
 
 # Asset Paths
 MODEL_DIR = "../models_data"

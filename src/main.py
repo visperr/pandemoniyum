@@ -16,6 +16,16 @@ def get_asset_path(relative_path: str) -> str:
     return os.path.join(os.path.abspath("."), relative_path)
 
 
+def open_video_capture() -> cv2.VideoCapture:
+    if config.USE_CAMERA:
+        cap = cv2.VideoCapture(config.CAMERA_INDEX)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    else:
+        cap = cv2.VideoCapture(config.VIDEO_PATH)
+    return cap
+
+
 def main():
     streamer = UDPStreamer(ip=config.UDP_IP, port=config.UDP_PORT)
     packer = DataPacker()
@@ -28,7 +38,8 @@ def main():
         blendshapes=config.FACE_BLENDSHAPES
     )
 
-    cap = cv2.VideoCapture(config.CAMERA_INDEX)
+    cap = open_video_capture()
+
     print("Tracking pipeline started. Press 'q' to exit.")
 
     prev_time = 0.0
