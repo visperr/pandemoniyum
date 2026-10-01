@@ -50,6 +50,7 @@ class FaceTracker(BaseTracker):
         matrix = self.last_result.facial_transformation_matrixes[0].flatten().tolist()
 
         return FaceTrackingData(
+            landmarks=self.last_result.face_landmarks,
             blendshapes=blendshapes,
             transformation_matrix=matrix,
             tracking_active=True
@@ -60,11 +61,18 @@ class FaceTracker(BaseTracker):
         if not self.last_result or not self.last_result.face_landmarks:
             return
 
+        FaceTracker.draw_landmarks(frame, self.last_result.face_landmarks)
+
+    @staticmethod
+    def draw_landmarks(frame: np.ndarray, landmarks, color=(0, 255, 0)) -> None:
+        if landmarks is None:
+            return
+        
         h, w, _ = frame.shape
-        for face_landmarks in self.last_result.face_landmarks:
+        for face_landmarks in landmarks:
             for lm in face_landmarks:
                 cx, cy = int(lm.x * w), int(lm.y * h)
-                cv2.circle(frame, (cx, cy), 1, (0, 255, 0), -1)
+                cv2.circle(frame, (cx, cy), 1, color, -1)
 
     def close(self) -> None:
         if self.model:

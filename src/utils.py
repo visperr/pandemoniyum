@@ -33,3 +33,11 @@ def get_gallery_similarity(feature, feature_gallery):
 
 def get_milliseconds_since_epoch():
     return time.time_ns() // 1_000_000
+
+
+def player_color_from_id(player_id) -> tuple[int, int, int]:
+    if player_id < 1:
+        player_id = 1
+
+    colors = [(0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255)]
+    return colors[(player_id - 1) % len(colors)]

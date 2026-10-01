@@ -4,6 +4,7 @@ from models.base_data import BaseTrackingData
 
 @dataclass
 class FaceTrackingData(BaseTrackingData):
+    landmarks: any = None
     blendshapes: Dict[str, float] = field(default_factory=dict)
     transformation_matrix: List[float] = field(default_factory=list)
     tracking_active: bool = False

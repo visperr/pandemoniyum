@@ -1,13 +1,18 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from models.base_data import BaseTrackingData
+from models.face_data import FaceTrackingData
 
 @dataclass
 class PersonTrackingData(BaseTrackingData):
     id: int = 0
+
     x1: int = 0
     x2: int = 0
     y1: int = 0
     y2: int = 0
+
+    face: FaceTrackingData = field(default_factory=FaceTrackingData)
+
     occluded: bool = False
     tracking_active: bool = False
 
@@ -31,5 +36,6 @@ class PersonTrackingData(BaseTrackingData):
             "y1": self.y1,
             "y2": self.y2,
             "occluded": self.occluded,
+            "face": self.face.to_dict(),
             "is_tracking": self.tracking_active
         }

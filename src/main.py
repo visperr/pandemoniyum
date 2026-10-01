@@ -4,6 +4,7 @@ import os
 import time
 
 import config
+import utils
 from core.data_packer import DataPacker
 from core.network_streamer import UDPStreamer
 from trackers.face_tracker import FaceTracker
@@ -59,11 +60,14 @@ def main():
             frame = cv2.flip(frame, 1)
 
             # 1. Process tracking components
-            # face_data = face_tracker.process_frame(frame)
             scene_data = person_tracker.process_frame(frame)
 
+            for person in scene_data.persons:
+                subframe = frame[person.y1:person.y2, person.x1:person.x2]
+                person.face = face_tracker.process_frame(subframe)
+
             # 2. Add tracking models incrementally
-            #packer.add(face_data)
+            # packer.add(face_data)
             packer.add(scene_data)
             # packer.add(gesture_data) # Ready for other modules
 
@@ -79,8 +83,12 @@ def main():
             # 5. Preview and Debug overlay
             if config.SHOW_PREVIEW:
                 if config.DEBUG_MODE:
-                    # face_tracker.draw_debug(frame)
                     person_tracker.draw_debug(frame)
+
+                    for person in scene_data.persons:
+                        subframe = frame[person.y1:person.y2, person.x1:person.x2]
+                        color = utils.player_color_from_id(person.id)
+                        FaceTracker.draw_landmarks(subframe, person.face.landmarks, color)
 
                     curr_time = time.time()
                     fps = 1.0 / (curr_time - prev_time) if prev_time > 0 else 0.0

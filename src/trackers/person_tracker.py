@@ -9,6 +9,7 @@ from ultralytics import YOLO
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
 import config
+import utils
 from core.base_tracker import BaseTracker
 from models.person_data import PersonTrackingData
 from models.scene_data import SceneTrackingData
@@ -208,13 +209,12 @@ class PersonTracker(BaseTracker):
         if self.last_data is None:
             pass
 
-        colors = [(0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255)]
-
         for player in self.last_data:
-            color = colors[(player.id - 1) % len(colors)]
+            color = utils.player_color_from_id(player.id)
+            
+            status_str = f"Player {player.id}" + (" [LOCKED]" if player.is_occluded else "")
             
             cv2.rectangle(frame, (player.x1, player.y1), (player.x2, player.y2), color, 2)
-            status_str = f"Player {player.id}" + (" [LOCKED]" if player.is_occluded else "")
             cv2.putText(frame, status_str, (player.x1, player.y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
     def close(self) -> None:
