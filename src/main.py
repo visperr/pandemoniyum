@@ -5,6 +5,7 @@ import time
 import json
 import numpy as np
 from pathlib import Path
+import base64
 
 import config
 import utils
@@ -133,6 +134,15 @@ def main():
             # packer.add(face_data)
             packer.add(scene_data)
             # packer.add(gesture_data) # Ready for other modules
+
+            # Resize to a very low resolution to ensure it fits in a single UDP packet (< 64KB)
+            small_frame = cv2.resize(frame, (256, 144))
+
+            # Compress as JPEG (quality 40 is usually enough for a calibration preview)
+            success, buffer = cv2.imencode('.jpg', small_frame, [cv2.IMWRITE_JPEG_QUALITY, 40])
+            if success:
+                frame_b64 = base64.b64encode(buffer).decode('utf-8')
+                packer.add_frame_image(frame_b64)
 
             # 3. Serialise and send accumulated payload
             packet = packer.pack_frame()

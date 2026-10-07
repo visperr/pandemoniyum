@@ -11,6 +11,11 @@ class DataPacker:
         if data_obj and data_obj.is_tracking:
             self._frame_data[data_obj.system_id] = data_obj.to_dict()
 
+    def add_frame_image(self, b64_string: str) -> None:
+        """Attach the base64 encoded camera frame to the payload."""
+        if b64_string:
+            self._frame_data["frame_base64"] = b64_string
+
     def pack_single(self, data_obj: BaseTrackingData) -> bytes:
         """Directly serialise an individual tracking model to bytes."""
         payload = {data_obj.system_id: data_obj.to_dict()}
