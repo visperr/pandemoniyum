@@ -65,6 +65,7 @@ def main():
     person_tracker = PersonTracker(
         model_dir=model_dir,
         num_persons=config.PERSON_NUM_PERSONS,
+        frame_skip=config.PERSON_DETECTION_FRAME_SKIP,
     )
 
     pose_tracker = PoseTracker(
@@ -73,7 +74,11 @@ def main():
         min_tracking_confidence=config.POSE_MIN_CONFIDENCE
     )
 
+    if config.LANDMARK_FRAME_SKIP < 1:
+        raise ValueError("LANDMARK_FRAME_SKIP must be at least 1")
+
     cap = open_video_capture()
+    out = None
 
     if config.SAVE_PREVIEW:
         out = open_video_writer(cap, Path(config.SAVE_PATH))
@@ -81,6 +86,8 @@ def main():
     print("Tracking pipeline started. Press 'q' to exit.")
 
     prev_time = 0.0
+    frame_count = 0
+    last_landmarks = {}
 
     try:
         while cap.isOpened():
@@ -88,6 +95,7 @@ def main():
             if not success:
                 break
 
+            frame_count += 1
             frame = cv2.flip(frame, 1)
 
             # 1. Process tracking components
@@ -100,14 +108,22 @@ def main():
 
                 # TODO determine better/smaller subframe for face detection based on datapoints 0-10 from the pose detection output!
 
-                subframe = frame[person.y1:person.y2, person.x1:person.x2]
+                x1 = max(0, person.x1)
+                y1 = max(0, person.y1)
+                x2 = min(frame.shape[1], person.x2)
+                y2 = min(frame.shape[0], person.y2)
+                subframe = frame[y1:y2, x1:x2]
 
                 if subframe.shape[0] < 20 or subframe.shape[1] < 20:
                     print(f"sf {subframe.shape[0]}, {subframe.shape[1]}")
                     continue
 
-                person.pose = pose_tracker.process_frame(subframe)
-                person.face = face_tracker.process_frame(subframe)
+                if (frame_count - 1) % config.LANDMARK_FRAME_SKIP == 0:
+                    person.pose = pose_tracker.process_frame(subframe)
+                    person.face = face_tracker.process_frame(subframe)
+                    last_landmarks[person.id] = (person.pose, person.face)
+                elif person.id in last_landmarks:
+                    person.pose, person.face = last_landmarks[person.id]
 
                 # TODO for demonstration only
                 if "jawOpen" in person.face.blendshapes and person.face.blendshapes["jawOpen"] > 0.05:
@@ -155,6 +171,7 @@ def main():
 
     finally:
         face_tracker.close()
+        pose_tracker.close()
         streamer.close()
         cap.release()
         if out is not None:

@@ -14,3 +14,18 @@ To build the headless `.exe` for Unity integration:
 1. Run `pyinstaller --noconsole --onefile src/main.py`
 2. Move the generated `dist/main.exe` into your Unity project's `StreamingAssets/Tracker/` folder.
 3. Copy the `models_data/` folder into the same `Tracker/` directory so the executable can locate the weights.
+
+## Performance
+The person detector and re-identification model use CUDA when available, otherwise Apple's
+Metal Performance Shaders (MPS) on supported Macs, and CPU as a fallback. Person detection
+defaults to a 480-pixel inference size; increase `PERSON_DETECTOR_IMAGE_SIZE` in `src/config.py`
+if you need more detection detail.
+
+Preview, per-frame debug output, and preview-video encoding are disabled by default to avoid
+adding UI, terminal, and encoder overhead to the tracking loop. Enable `SHOW_PREVIEW`,
+`DEBUG_MODE`, or `SAVE_PREVIEW` in `src/config.py` individually when needed.
+
+Person detection/re-identification and face/pose inference run every second frame by default
+(`PERSON_DETECTION_FRAME_SKIP` and `LANDMARK_FRAME_SKIP`); person positions are predicted and
+the most recent face/pose results are reused between updates. Lower either skip value to `1`
+for per-frame inference at the cost of throughput, or increase it if you need more headroom.

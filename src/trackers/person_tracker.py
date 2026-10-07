@@ -19,25 +19,32 @@ from utils import *
 class PersonTracker(BaseTracker):
 
     def __init__(self, model_dir: str, num_persons: int = 1, frame_skip: int = 1):
+        if frame_skip < 1:
+            raise ValueError("frame_skip must be at least 1")
+
         self.num_persons = num_persons
         self.frame_skip = frame_skip
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            self.device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            self.device = "mps"
+        else:
+            self.device = "cpu"
 
         self.player_galleries = {}
         self.player_last_positions = {}
         self.track_to_player = {}
 
         self.frame_count = 0
-        self.last_detections = []
-        self.last_embeddings = []
+        self.last_tracks = []
 
         super().__init__(model_dir)
 
     def _initialize_model(self):
         print(f"Using {self.device}")
 
-        self.detector = YOLO(os.path.join(self.model_dir, "yolov8m.pt")) #Sett to yolov8n.pt for faster computing, may at wrong detection when extra people are close to the players.
+        self.detector = YOLO(os.path.join(self.model_dir, "yolov8m.pt"))
         self.detector.to(self.device)
 
         self.embedder = OSNetEmbedder(model_dir=self.model_dir, device=self.device)
@@ -54,8 +61,14 @@ class PersonTracker(BaseTracker):
         return None
 
     def detect(self, frame: np.ndarray) -> tuple[list, list]:
-        if self.frame_count % self.frame_skip == 1 or self.frame_skip == 1:
-            results = self.detector(frame, classes=[0], device=self.device, verbose=False)[0]
+        if (self.frame_count - 1) % self.frame_skip == 0:
+            results = self.detector(
+                frame,
+                classes=[0],
+                device=self.device,
+                imgsz=config.PERSON_DETECTOR_IMAGE_SIZE,
+                verbose=False
+            )[0]
     
             detections = []
             crops = []
@@ -80,11 +93,9 @@ class PersonTracker(BaseTracker):
                             crops.append(crop)
     
             embeddings = self.embedder(crops) if len(crops) > 0 else []
-            self.last_detections, self.last_embeddings = detections, embeddings
+            return detections, embeddings
         else:
-            detections, embeddings = self.last_detections, self.last_embeddings
-
-        return detections, embeddings
+            return [], []
     
     def process_frame(self, frame: np.ndarray) -> SceneTrackingData:
         self.frame_count += 1
@@ -95,9 +106,19 @@ class PersonTracker(BaseTracker):
 
         detections, embeddings = self.detect(frame)
 
-        tracks = self.tracker.update_tracks(detections, embeds=embeddings, frame=frame)
+        if (self.frame_count - 1) % self.frame_skip == 0:
+            tracks = self.tracker.update_tracks(detections, embeds=embeddings, frame=frame)
+            self.last_tracks = tracks
+        else:
+            for track in self.tracker.tracker.tracks:
+                if track.is_confirmed():
+                    track.predict(self.tracker.tracker.kf)
+            tracks = self.last_tracks
 
-        confirmed_tracks = [t for t in tracks if t.is_confirmed() and t.time_since_update == 0]
+        confirmed_tracks = [
+            t for t in tracks
+            if t.is_confirmed() and t.time_since_update < self.frame_skip
+        ]
         track_boxes = {t.track_id: t.to_ltrb() for t in confirmed_tracks}
 
         occluded_track_ids = set()
@@ -126,7 +147,11 @@ class PersonTracker(BaseTracker):
                     assigned_slots_this_frame.add(slot)
                     self.player_last_positions[slot] = (center_x, center_y)
                     
-                    if feature is not None and track_id not in occluded_track_ids:
+                    if (
+                        feature is not None
+                        and track.time_since_update == 0
+                        and track_id not in occluded_track_ids
+                    ):
                         if slot not in self.player_galleries:
                             self.player_galleries[slot] = []
                         if len(self.player_galleries[slot]) >= 15:
@@ -194,9 +219,6 @@ class PersonTracker(BaseTracker):
                     occluded=(track_id in occluded_track_ids),
                     tracking_active=True
                 ))
-
-            else:
-                print("offscreen")
 
         self.last_data = person_data
 
