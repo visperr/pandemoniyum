@@ -33,11 +33,11 @@ class PersonTrackingData(BaseTrackingData):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
-            # "x1": self.x1,
-            # "x2": self.x2,
-            # "y1": self.y1,
-            # "y2": self.y2,
-            # "occluded": self.occluded,
+            "x1": self.x1,
+            "x2": self.x2,
+            "y1": self.y1,
+            "y2": self.y2,
+            "occluded": self.occluded,
             "face": self.face.to_dict(),
             "pose": self.pose.to_dict(),
             "is_tracking": self.tracking_active

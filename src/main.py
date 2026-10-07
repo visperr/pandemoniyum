@@ -27,7 +27,7 @@ def open_video_capture() -> cv2.VideoCapture:
     if config.USE_CAMERA:
         cap = cv2.VideoCapture(config.CAMERA_INDEX)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
     else:
         cap = cv2.VideoCapture(config.VIDEO_PATH)
     return cap
@@ -135,10 +135,15 @@ def main():
             packer.add(scene_data)
             # packer.add(gesture_data) # Ready for other modules
 
-            # Resize to a very low resolution to ensure it fits in a single UDP packet (< 64KB)
-            small_frame = cv2.resize(frame, (256, 144))
+            packer._frame_data["frame_width"] = frame.shape[1]
+            packer._frame_data["frame_height"] = frame.shape[0]
 
-            # Compress as JPEG (quality 40 is usually enough for a calibration preview)
+            # Aspect-aware resize: Scale height to 240, adjust width proportionally
+            scale = 240.0 / frame.shape[0]
+            small_w = int(frame.shape[1] * scale)
+            small_frame = cv2.resize(frame, (small_w, 240))
+
+            # Compress as JPEG
             success, buffer = cv2.imencode('.jpg', small_frame, [cv2.IMWRITE_JPEG_QUALITY, 40])
             if success:
                 frame_b64 = base64.b64encode(buffer).decode('utf-8')
