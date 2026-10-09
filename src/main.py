@@ -11,6 +11,7 @@ import config
 import utils
 from core.data_packer import DataPacker
 from core.network_streamer import UDPStreamer
+from core.pose_smoother import PoseSmoother
 from trackers.face_tracker import FaceTracker
 from trackers.person_tracker import PersonTracker
 from trackers.pose_tracker import PoseTracker
@@ -51,6 +52,30 @@ def open_video_writer(cap: cv2.VideoCapture, output_path: Path) -> cv2.VideoWrit
     return out
 
 
+def frame_time(cap: cv2.VideoCapture, frame_count: int) -> float:
+    """
+    Timestamp of the current frame in seconds, used by the pose filters.
+    Camera: wall clock. Video file: position in the video, so playback speed does not matter.
+    """
+    if config.USE_CAMERA:
+        return time.perf_counter()
+    pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+    if pos_ms and pos_ms > 0:
+        return pos_ms / 1000.0
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    return frame_count / (fps if fps and fps > 0 else 30.0)
+
+
+def clamped_box(person, frame: np.ndarray) -> tuple[int, int, int, int]:
+    """The person box clipped to the frame: the exact region the pose/face models run on."""
+    return (
+        max(0, person.x1),
+        max(0, person.y1),
+        min(frame.shape[1], person.x2),
+        min(frame.shape[0], person.y2),
+    )
+
+
 def main():
     streamer = UDPStreamer(ip=config.UDP_IP, port=config.UDP_PORT)
     packer = DataPacker()
@@ -72,7 +97,20 @@ def main():
     pose_tracker = PoseTracker(
         model_dir=model_dir,
         num_poses=config.POSE_NUM_POSES,
-        min_tracking_confidence=config.POSE_MIN_CONFIDENCE
+        min_tracking_confidence=config.POSE_MIN_CONFIDENCE,
+        model_file=config.POSE_MODEL_FILE
+    )
+
+    pose_smoother = PoseSmoother(
+        enabled=config.POSE_SMOOTHING_ENABLED,
+        min_cutoff=config.POSE_MIN_CUTOFF,
+        beta=config.POSE_BETA,
+        speed_floor=config.POSE_SPEED_FLOOR,
+        vis_low=config.POSE_VISIBILITY_LOW,
+        vis_high=config.POSE_VISIBILITY_HIGH,
+        rest_blend_seconds=config.POSE_REST_BLEND_SECONDS,
+        dropout_hold_seconds=config.POSE_DROPOUT_HOLD_SECONDS,
+        reset_seconds=config.POSE_RESET_SECONDS,
     )
 
     if config.LANDMARK_FRAME_SKIP < 1:
@@ -88,7 +126,7 @@ def main():
 
     prev_time = 0.0
     frame_count = 0
-    last_landmarks = {}
+    last_faces = {}
 
     try:
         while cap.isOpened():
@@ -98,6 +136,7 @@ def main():
 
             frame_count += 1
             frame = cv2.flip(frame, 1)
+            now = frame_time(cap, frame_count)
 
             # 1. Process tracking components
             scene_data = person_tracker.process_frame(frame)
@@ -109,10 +148,8 @@ def main():
 
                 # TODO determine better/smaller subframe for face detection based on datapoints 0-10 from the pose detection output!
 
-                x1 = max(0, person.x1)
-                y1 = max(0, person.y1)
-                x2 = min(frame.shape[1], person.x2)
-                y2 = min(frame.shape[0], person.y2)
+                box = clamped_box(person, frame)
+                x1, y1, x2, y2 = box
                 subframe = frame[y1:y2, x1:x2]
 
                 if subframe.shape[0] < 20 or subframe.shape[1] < 20:
@@ -120,11 +157,17 @@ def main():
                     continue
 
                 if (frame_count - 1) % config.LANDMARK_FRAME_SKIP == 0:
-                    person.pose = pose_tracker.process_frame(subframe)
+                    raw_pose = pose_tracker.process_frame(subframe)
+                    person.pose = pose_smoother.update(person.id, raw_pose, box, frame.shape, now)
                     person.face = face_tracker.process_frame(subframe)
-                    last_landmarks[person.id] = (person.pose, person.face)
-                elif person.id in last_landmarks:
-                    person.pose, person.face = last_landmarks[person.id]
+                    last_faces[person.id] = person.face
+                else:
+                    # Between detections the smoothed pose is re-placed into the person's current box
+                    reprojected = pose_smoother.reproject(person.id, box, frame.shape, now)
+                    if reprojected is not None:
+                        person.pose = reprojected
+                    if person.id in last_faces:
+                        person.face = last_faces[person.id]
 
                 # TODO for demonstration only
                 if "jawOpen" in person.face.blendshapes and person.face.blendshapes["jawOpen"] > 0.05:
@@ -156,7 +199,8 @@ def main():
 
                 # 4. Debug network packages to terminal
                 if config.DEBUG_MODE:
-                    print(f"[NETWORK DEBUG] {packet.decode('utf-8')}")
+                    #print(f"[NETWORK DEBUG] {packet.decode('utf-8')}")
+                    pass
 
             # 5. Preview and Debug overlay
             if config.SHOW_PREVIEW:
@@ -164,7 +208,8 @@ def main():
                     person_tracker.draw_debug(frame, notes)
 
                     for person in scene_data.persons:
-                        subframe = frame[person.y1:person.y2, person.x1:person.x2]
+                        x1, y1, x2, y2 = clamped_box(person, frame)
+                        subframe = frame[y1:y2, x1:x2]
                         color = utils.player_color_from_id(person.id)
                         FaceTracker.draw_landmarks(subframe, person.face.landmarks, color)
                         PoseTracker.draw_landmarks(subframe, person.pose.landmarks, color)

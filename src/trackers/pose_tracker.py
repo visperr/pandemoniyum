@@ -7,17 +7,19 @@ from mediapipe.tasks.python import vision
 
 import utils
 from core.base_tracker import BaseTracker
-from models.pose_data import PoseTrackingData
+from models.pose_data import PoseTrackingData, POSE_LANDMARK_COUNT
 
 class PoseTracker(BaseTracker):
-    def __init__(self, model_dir: str, num_poses: int = 1, min_tracking_confidence: float = 0.5):
+    def __init__(self, model_dir: str, num_poses: int = 1, min_tracking_confidence: float = 0.5,
+                 model_file: str = "pose_landmarker_lite.task"):
         self.num_poses = num_poses
         self.min_tracking_confidence = min_tracking_confidence
+        self.model_file = model_file
         self.last_result = None
         super().__init__(model_dir)
 
     def _initialize_model(self):
-        model_path = os.path.join(self.model_dir, "pose_landmarker_lite.task")
+        model_path = os.path.join(self.model_dir, self.model_file)
         base_options = python.BaseOptions(model_asset_path=model_path)
         options = vision.PoseLandmarkerOptions(
             base_options=base_options,
@@ -37,7 +39,7 @@ class PoseTracker(BaseTracker):
             return PoseTrackingData(tracking_active=False)
 
         return PoseTrackingData(
-            landmarks=self.last_result.pose_landmarks[0],
+            landmarks=list(self.last_result.pose_landmarks[0][:POSE_LANDMARK_COUNT]),
             tracking_active=True
         )
 
@@ -46,16 +48,16 @@ class PoseTracker(BaseTracker):
         if not self.last_result or not self.last_result.pose_landmarks or not self.last_result.pose_landmarks[0]:
             return
 
-        PoseTracker.draw_landmarks(frame, self.last_result.pose_landmarks[0])
+        PoseTracker.draw_landmarks(frame, self.last_result.pose_landmarks[0][:POSE_LANDMARK_COUNT])
 
     @staticmethod
     def draw_landmarks(frame: np.ndarray, landmarks, color=(0, 255, 0)) -> None:
-        if landmarks is None or len(landmarks) < 33:
+        if landmarks is None or len(landmarks) < POSE_LANDMARK_COUNT:
             return
         
         h, w, _ = frame.shape
         i = -1
-        for lm in landmarks:
+        for lm in landmarks[:POSE_LANDMARK_COUNT]:
             i += 1
 
             # Do not draw face landmarks because we're already using FaceTracker
@@ -63,13 +65,15 @@ class PoseTracker(BaseTracker):
             if i <= 10:
                 continue
 
-            cv2.circle(frame, (int(lm.x * w), int(lm.y * h)), 4, color, -1)
+            # Joints that are inferred rather than seen (off-screen/occluded) are drawn dimmed
+            visibility = getattr(lm, "visibility", None)
+            dim = visibility is not None and visibility < 0.5
+            point_color = tuple(c // 3 for c in color) if dim else color
+            cv2.circle(frame, (int(lm.x * w), int(lm.y * h)), 4, point_color, -1)
 
         connected = [
             (11, 12), (11, 13), (13, 15), (15, 21), (15, 19), (15, 17), (17, 19), (12, 14),
-            (14, 16), (16, 22), (16, 18), (16, 20), (18, 20), (11, 23), (12, 24), (23, 24),
-            (23, 25), (24, 26), (25, 27), (26, 28), (27, 29), (27, 31), (29, 31), (28, 30),
-            (28, 32), (30, 32)
+            (14, 16), (16, 22), (16, 18), (16, 20), (18, 20), (11, 23), (12, 24), (23, 24)
         ]
 
         for (l1, l2) in connected:

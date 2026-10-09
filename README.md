@@ -29,3 +29,14 @@ Person detection/re-identification and face/pose inference run every second fram
 (`PERSON_DETECTION_FRAME_SKIP` and `LANDMARK_FRAME_SKIP`); person positions are predicted and
 the most recent face/pose results are reused between updates. Lower either skip value to `1`
 for per-frame inference at the cost of throughput, or increase it if you need more headroom.
+## Pose smoothing and off-screen limbs
+Pose landmarks pass through `src/core/pose_smoother.py` before they are streamed:
+- Each joint is smoothed with a One Euro filter (strong smoothing when still, little lag when moving), in frame
+  space so that the jittering person box does not leak into the landmarks.
+- Joints that MediaPipe reports with low visibility or places outside the frame (e.g. hands below the webcam
+  image) are not trusted. They are placed at the parent joint plus the learned bone length, holding their last
+  direction and slowly relaxing to "hanging down", and cross-fade back when they re-enter the frame.
+- Only landmarks 0-24 (face, arms, torso, hips) are kept: everything below the hips (25-32) is dropped right
+  after detection, so it is never processed, drawn or sent. The `pose.landmarks` array therefore has 25 entries.
+- Every landmark in the UDP payload now has an extra `"visibility"` field (0 = inferred, 1 = measured).
+- Tune with the `POSE_*` values in `src/config.py`; set `POSE_SMOOTHING_ENABLED = False` for raw output.
