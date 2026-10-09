@@ -18,12 +18,22 @@ from utils import *
 
 class PersonTracker(BaseTracker):
 
-    def __init__(self, model_dir: str, num_persons: int = 1, frame_skip: int = 1):
+    def __init__(self, model_dir: str, num_persons: int = 1, frame_skip: int = 1, freeze_frames: int = 0):
         if frame_skip < 1:
             raise ValueError("frame_skip must be at least 1")
+        if freeze_frames < 0:
+            raise ValueError("freeze_frames must not be negative")
+
+        # DeepSort deletes a track after max_age missed frames, so a freeze cannot outlast that.
+        max_freeze = max(0, config.PERSON_MAX_AGE_FRAMES - frame_skip)
+        if freeze_frames > max_freeze:
+            print(f"PERSON_FREEZE_FRAMES={freeze_frames} exceeds what PERSON_MAX_AGE_FRAMES allows; using {max_freeze}")
+            freeze_frames = max_freeze
 
         self.num_persons = num_persons
         self.frame_skip = frame_skip
+        self.freeze_frames = freeze_frames
+        self.last_boxes = {}
 
         if torch.cuda.is_available():
             self.device = "cuda"
@@ -115,11 +125,37 @@ class PersonTracker(BaseTracker):
                     track.predict(self.tracker.tracker.kf)
             tracks = self.last_tracks
 
-        confirmed_tracks = [
-            t for t in tracks
-            if t.is_confirmed() and t.time_since_update < self.frame_skip
-        ]
-        track_boxes = {t.track_id: t.to_ltrb() for t in confirmed_tracks}
+        # time_since_update counts frames since the track was last matched to a detection.
+        # - healthy: matched recently enough; the box is the tracker's current estimate.
+        # - frozen:  detection was lost, but the person is held for `freeze_frames` more frames at the
+        #            last known box. Only players that already own a slot are held. Healthy tracks are
+        #            listed first so they win a slot if a new track took over for a frozen one.
+        healthy_tracks = []
+        frozen_tracks = []
+        for t in tracks:
+            if not t.is_confirmed():
+                continue
+            if t.time_since_update < self.frame_skip:
+                healthy_tracks.append(t)
+            elif (
+                t.time_since_update < self.frame_skip + self.freeze_frames
+                and t.track_id in self.track_to_player
+                and t.track_id in self.last_boxes
+            ):
+                frozen_tracks.append(t)
+
+        track_boxes = {}
+        for t in healthy_tracks:
+            track_boxes[t.track_id] = np.array(t.to_ltrb())
+            self.last_boxes[t.track_id] = track_boxes[t.track_id]
+        for t in frozen_tracks:
+            track_boxes[t.track_id] = self.last_boxes[t.track_id]
+
+        frozen_track_ids = {t.track_id for t in frozen_tracks}
+        confirmed_tracks = healthy_tracks + frozen_tracks
+
+        known_ids = {t.track_id for t in tracks}
+        self.last_boxes = {k: v for k, v in self.last_boxes.items() if k in known_ids}
 
         occluded_track_ids = set()
         for i, t1 in enumerate(confirmed_tracks):
@@ -135,8 +171,7 @@ class PersonTracker(BaseTracker):
         for track in confirmed_tracks:
             track_id = track.track_id
             feature = track.features[-1] if hasattr(track, 'features') and len(track.features) > 0 else None
-            ltrb = track.to_ltrb()
-            x1, y1, x2, y2 = map(int, ltrb)
+            x1, y1, x2, y2 = map(int, track_boxes[track_id])
             center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
 
             if track_id in self.track_to_player:
@@ -209,7 +244,7 @@ class PersonTracker(BaseTracker):
         for track in confirmed_tracks:
             track_id = track.track_id
             if track_id in self.track_to_player:
-                x1, y1, x2, y2 = map(int, track.to_ltrb())
+                x1, y1, x2, y2 = map(int, track_boxes[track_id])
                 person_data.append(PersonTrackingData(
                     id=self.track_to_player[track_id],
                     x1=x1,
@@ -217,6 +252,7 @@ class PersonTracker(BaseTracker):
                     y1=y1,
                     y2=y2,
                     occluded=(track_id in occluded_track_ids),
+                    frozen=(track_id in frozen_track_ids),
                     tracking_active=True
                 ))
 
@@ -236,7 +272,7 @@ class PersonTracker(BaseTracker):
 
             note = notes[player.id] if player.id in notes else ""
             
-            status_str = f"Player {player.id} " + ("[LOCKED] " if player.is_occluded else "") + note
+            status_str = f"Player {player.id} " + ("[LOCKED] " if player.is_occluded else "") + ("[FROZEN] " if player.frozen else "") + note
             
             cv2.rectangle(frame, (player.x1, player.y1), (player.x2, player.y2), color, 2)
             cv2.putText(frame, status_str, (player.x1, player.y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)

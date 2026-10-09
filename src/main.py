@@ -92,6 +92,7 @@ def main():
         model_dir=model_dir,
         num_persons=config.PERSON_NUM_PERSONS,
         frame_skip=config.PERSON_DETECTION_FRAME_SKIP,
+        freeze_frames=config.PERSON_FREEZE_FRAMES,
     )
 
     pose_tracker = PoseTracker(

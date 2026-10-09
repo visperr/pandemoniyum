@@ -16,6 +16,8 @@ class PersonTrackingData(BaseTrackingData):
     pose: PoseTrackingData = field(default_factory=PoseTrackingData)
 
     occluded: bool = False
+    # True while the person was not detected recently and the last known box is being held
+    frozen: bool = False
     tracking_active: bool = False
 
     @property
@@ -38,6 +40,7 @@ class PersonTrackingData(BaseTrackingData):
             "y1": self.y1,
             "y2": self.y2,
             "occluded": self.occluded,
+            "frozen": self.frozen,
             "face": self.face.to_dict(),
             "pose": self.pose.to_dict(),
             "is_tracking": self.tracking_active

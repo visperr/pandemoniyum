@@ -6,7 +6,7 @@ UDP_PORT = 5005
 SHOW_PREVIEW = True
 DEBUG_MODE = True
 SAVE_PREVIEW = False
-SAVE_PATH = "../output2.mp4"
+SAVE_PATH = "../output.mp4"
 
 # Video source selection
 USE_CAMERA = True
@@ -26,7 +26,8 @@ FACE_BLENDSHAPES = ['jawOpen']
 # Person Trackerq
 PERSON_NUM_PERSONS = 2
 PERSON_CONFIDENCE_THRESHOLD = 0.40
-PERSON_MAX_AGE_FRAMES = 90
+PERSON_MAX_AGE_FRAMES = 30
+PERSON_FREEZE_FRAMES = 30 # After detection is lost, keep the last box (and keep running pose/face) this many frames before releasing the lock. Must be < PERSON_MAX_AGE_FRAMES
 PERSON_MAX_COSINE_DIST = 0.20
 PERSON_REID_SIMILARITY_THRESHOLD = 0.65
 PERSON_DETECTOR_IMAGE_SIZE = 480
