@@ -28,8 +28,8 @@ def get_asset_path(relative_path: str) -> str:
 def open_video_capture() -> cv2.VideoCapture:
     if config.USE_CAMERA:
         cap = cv2.VideoCapture(config.CAMERA_INDEX)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_FRAME_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_FRAME_HEIGHT)
     else:
         cap = cv2.VideoCapture(config.VIDEO_PATH)
     return cap
