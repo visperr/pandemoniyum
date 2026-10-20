@@ -40,3 +40,10 @@ Pose landmarks pass through `src/core/pose_smoother.py` before they are streamed
   after detection, so it is never processed, drawn or sent. The `pose.landmarks` array therefore has 25 entries.
 - Every landmark in the UDP payload now has an extra `"visibility"` field (0 = inferred, 1 = measured).
 - Tune with the `POSE_*` values in `src/config.py`; set `POSE_SMOOTHING_ENABLED = False` for raw output.
+
+## Detection freeze
+When the person detector briefly loses a player, that player's last bounding box is held for
+`PERSON_FREEZE_FRAMES` frames (default 10) before the lock is released. During the freeze the pose and face
+detectors keep running on the held box, and the person is sent with `"frozen": true`. Players are only held
+if they already own a player slot, and the freeze is capped below `PERSON_MAX_AGE_FRAMES`. Set it to `0`
+to restore the old behaviour.

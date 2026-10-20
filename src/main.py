@@ -11,6 +11,7 @@ import config
 import utils
 from core.data_packer import DataPacker
 from core.network_streamer import UDPStreamer
+from core.perf_monitor import PerformanceMonitor
 from core.pose_smoother import PoseSmoother
 from trackers.face_tracker import FaceTracker
 from trackers.person_tracker import PersonTracker
@@ -125,12 +126,16 @@ def main():
 
     print("Tracking pipeline started. Press 'q' to exit.")
 
-    prev_time = 0.0
+    perf = PerformanceMonitor()
+
     frame_count = 0
     last_faces = {}
 
     try:
         while cap.isOpened():
+            perf.start(preserve=((frame_count - 1) % config.LANDMARK_FRAME_SKIP == 0))
+            perf.next("Frame capture")
+
             success, frame = cap.read()
             if not success:
                 break
@@ -138,6 +143,8 @@ def main():
             frame_count += 1
             frame = cv2.flip(frame, 1)
             now = frame_time(cap, frame_count)
+
+            perf.next("Person tracker")
 
             # 1. Process tracking components
             scene_data = person_tracker.process_frame(frame)
@@ -158,8 +165,13 @@ def main():
                     continue
 
                 if (frame_count - 1) % config.LANDMARK_FRAME_SKIP == 0:
+                    perf.next("Pose tracker")
                     raw_pose = pose_tracker.process_frame(subframe)
+
+                    perf.next("Pose smoother")
                     person.pose = pose_smoother.update(person.id, raw_pose, box, frame.shape, now)
+
+                    perf.next("Face tracker")
                     person.face = face_tracker.process_frame(subframe)
                     last_faces[person.id] = person.face
                 else:
@@ -173,6 +185,8 @@ def main():
                 # TODO for demonstration only
                 if "jawOpen" in person.face.blendshapes and person.face.blendshapes["jawOpen"] > 0.05:
                     notes[person.id] = "(JAW OPEN)"
+
+            perf.next("Network")
 
             # 2. Add tracking models incrementally
             # packer.add(face_data)
@@ -206,6 +220,8 @@ def main():
             # 5. Preview and Debug overlay
             if config.SHOW_PREVIEW:
                 if config.DEBUG_MODE:
+                    perf.next("Debug drawing")
+
                     person_tracker.draw_debug(frame, notes)
 
                     for person in scene_data.persons:
@@ -215,19 +231,14 @@ def main():
                         FaceTracker.draw_landmarks(subframe, person.face.landmarks, color)
                         PoseTracker.draw_landmarks(subframe, person.pose.landmarks, color)
 
-                    curr_time = time.time()
-                    fps = 1.0 / (curr_time - prev_time) if prev_time > 0 else 0.0
-                    prev_time = curr_time
-                    cv2.putText(
-                        frame, f"FPS: {int(fps)}", (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2
-                    )
+                    perf.end()
+                    perf.draw(frame)
 
                 if config.SAVE_PREVIEW:
                     out.write(frame)
 
                 cv2.imshow("Tracking Preview", frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                if cv2.pollKey() & 0xFF == ord('q'):
                     break
 
     finally:
