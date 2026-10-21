@@ -6,6 +6,7 @@ PERSISTED_STATISTICS = {"Pose tracker", "Pose smoother", "Face tracker", "Person
 class PerformanceMonitor():
 
     def __init__(self):
+        self.total = 0.0
         self.reset()
 
     def reset(self, preserve=False):

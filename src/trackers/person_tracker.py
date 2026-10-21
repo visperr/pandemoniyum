@@ -54,7 +54,12 @@ class PersonTracker(BaseTracker):
     def _initialize_model(self):
         print(f"Using {self.device}")
 
-        self.detector = YOLO(os.path.join(self.model_dir, "yolov8m.pt"))
+        detector_path = os.path.join(self.model_dir, config.PERSON_DETECTOR_MODEL)
+        if not os.path.exists(detector_path):
+            print(f"[PersonTracker] {config.PERSON_DETECTOR_MODEL} not found in {self.model_dir}, "
+                  f"falling back to {config.PERSON_DETECTOR_FALLBACK_MODEL} (slower)")
+            detector_path = os.path.join(self.model_dir, config.PERSON_DETECTOR_FALLBACK_MODEL)
+        self.detector = YOLO(detector_path)
         self.detector.to(self.device)
 
         self.embedder = OSNetEmbedder(model_dir=self.model_dir, device=self.device)

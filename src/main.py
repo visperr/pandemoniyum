@@ -10,12 +10,19 @@ import base64
 import config
 import utils
 from core.data_packer import DataPacker
+from core.latest_frame_capture import LatestFrameCapture
 from core.network_streamer import UDPStreamer
 from core.perf_monitor import PerformanceMonitor
 from core.pose_smoother import PoseSmoother
+from core import pose_ownership
 from trackers.face_tracker import FaceTracker
+from trackers.hand_gesture_tracker import HandGestureTracker
 from trackers.person_tracker import PersonTracker
 from trackers.pose_tracker import PoseTracker
+
+# Base64 grows data by 4/3; this leaves room for the face images in the 65507-byte UDP limit
+MAX_JPEG_BYTES = 30000
+MAX_UDP_PACKET_BYTES = 65000
 
 
 def get_asset_path(relative_path: str) -> str:
@@ -30,6 +37,9 @@ def open_video_capture() -> cv2.VideoCapture:
         cap = cv2.VideoCapture(config.CAMERA_INDEX)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_FRAME_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_FRAME_HEIGHT)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # Always process the newest camera frame so tracking delay doesn't build up
+        return LatestFrameCapture(cap)
     else:
         cap = cv2.VideoCapture(config.VIDEO_PATH)
     return cap
@@ -77,6 +87,22 @@ def clamped_box(person, frame: np.ndarray) -> tuple[int, int, int, int]:
     )
 
 
+def pose_box(person, frame: np.ndarray) -> tuple[int, int, int, int]:
+    """
+    The person box widened (and raised) so arms reaching out of the detector box stay inside the
+    pose model's crop, clipped to the frame. Pose landmarks are normalised to this box.
+    """
+    w, h = person.x2 - person.x1, person.y2 - person.y1
+    pad_x = int(w * config.POSE_CROP_PADDING_X)
+    pad_top = int(h * config.POSE_CROP_PADDING_TOP)
+    return (
+        max(0, person.x1 - pad_x),
+        max(0, person.y1 - pad_top),
+        min(frame.shape[1], person.x2 + pad_x),
+        min(frame.shape[0], person.y2),
+    )
+
+
 def main():
     streamer = UDPStreamer(ip=config.UDP_IP, port=config.UDP_PORT)
     packer = DataPacker()
@@ -113,7 +139,18 @@ def main():
         rest_blend_seconds=config.POSE_REST_BLEND_SECONDS,
         dropout_hold_seconds=config.POSE_DROPOUT_HOLD_SECONDS,
         reset_seconds=config.POSE_RESET_SECONDS,
+        hold_unseen_hands=config.POSE_HOLD_UNSEEN_HANDS,
+        max_forearm_stretch=config.POSE_MAX_FOREARM_STRETCH,
+        max_hand_speed=config.POSE_MAX_HAND_SPEED,
     )
+
+    gesture_tracker = None
+    if config.GESTURE_ENABLED:
+        gesture_tracker = HandGestureTracker(
+            model_dir=model_dir,
+            min_score=config.GESTURE_MIN_SCORE,
+            crop_scale=config.GESTURE_CROP_SCALE,
+        )
 
     if config.LANDMARK_FRAME_SKIP < 1:
         raise ValueError("LANDMARK_FRAME_SKIP must be at least 1")
@@ -130,10 +167,13 @@ def main():
 
     frame_count = 0
     last_faces = {}
+    send_video = config.VIDEO_DEFAULT_ON
 
     try:
         while cap.isOpened():
-            perf.start(preserve=((frame_count - 1) % config.LANDMARK_FRAME_SKIP == 0))
+            # Keep the landmark timings across skipped frames (nothing is skipped when LANDMARK_FRAME_SKIP is 1)
+            perf.start(preserve=(config.LANDMARK_FRAME_SKIP > 1 and frame_count > 0
+                                 and (frame_count - 1) % config.LANDMARK_FRAME_SKIP == 0))
             perf.next("Frame capture")
 
             success, frame = cap.read()
@@ -146,33 +186,73 @@ def main():
 
             perf.next("Person tracker")
 
+            # Unity tells us whether it currently shows the camera image
+            for message in streamer.poll_messages():
+                if message == "video:1":
+                    send_video = True
+                elif message == "video:0":
+                    send_video = False
+
             # 1. Process tracking components
             scene_data = person_tracker.process_frame(frame)
             notes = {}
+            run_gestures = gesture_tracker is not None and (frame_count - 1) % config.GESTURE_FRAME_SKIP == 0
 
+            landmark_frame = (frame_count - 1) % config.LANDMARK_FRAME_SKIP == 0
+
+            # Pass 1: crops and raw poses for every player
+            active = []  # (person, pose box, face crop, raw pose or None)
             for person in scene_data.persons:
                 if not person.is_tracking or (person.x2 - person.x1) < 20 or (person.y2 - person.y1) < 20:
                     continue
 
                 # TODO determine better/smaller subframe for face detection based on datapoints 0-10 from the pose detection output!
 
-                box = clamped_box(person, frame)
-                x1, y1, x2, y2 = box
-                subframe = frame[y1:y2, x1:x2]
+                # Face runs on the tight person box (padding could pull in the other player's face);
+                # pose runs on the padded box so outstretched hands stay in view
+                x1, y1, x2, y2 = clamped_box(person, frame)
+                face_frame = frame[y1:y2, x1:x2]
+                box = pose_box(person, frame)
+                px1, py1, px2, py2 = box
+                subframe = frame[py1:py2, px1:px2]
+                person.crop = box
 
-                if subframe.shape[0] < 20 or subframe.shape[1] < 20:
-                    print(f"sf {subframe.shape[0]}, {subframe.shape[1]}")
+                if face_frame.shape[0] < 20 or face_frame.shape[1] < 20:
+                    print(f"sf {face_frame.shape[0]}, {face_frame.shape[1]}")
                     continue
 
-                if (frame_count - 1) % config.LANDMARK_FRAME_SKIP == 0:
+                raw_pose = None
+                if landmark_frame:
                     perf.next("Pose tracker")
-                    raw_pose = pose_tracker.process_frame(subframe)
+                    candidates = pose_tracker.process_frame_candidates(subframe)
+                    # The crop can contain the other player (e.g. when reaching over them): pick our own body
+                    own_torso = pose_smoother.torso(person.id, frame.shape[0], now)
+                    other_torsos = [t for t in (pose_smoother.torso(p.id, frame.shape[0], now)
+                                                for p in scene_data.persons if p.id != person.id) if t is not None]
+                    raw_pose = pose_ownership.select_pose(candidates, box, own_torso, other_torsos,
+                                                          config.POSE_MAX_TORSO_JUMP)
+                    if raw_pose is not None:
+                        raw_pose = pose_ownership.editable(raw_pose)
+                        pose_ownership.enforce_arm_reach(raw_pose, box,
+                                                         pose_smoother.shoulder_reference(person.id, frame.shape[0]))
+                active.append((person, box, face_frame, raw_pose))
 
+            # Pass 2: a hand both players claim belongs to only one of them
+            if landmark_frame:
+                pose_ownership.resolve_shared_wrists(
+                    [(person.id, raw, box) for person, box, _, raw in active if raw is not None])
+
+            # Pass 3: smoothing, face and gestures per player
+            for person, box, face_frame, raw_pose in active:
+                if landmark_frame:
                     perf.next("Pose smoother")
                     person.pose = pose_smoother.update(person.id, raw_pose, box, frame.shape, now)
 
                     perf.next("Face tracker")
-                    person.face = face_tracker.process_frame(subframe)
+                    person.face = face_tracker.process_frame(face_frame)
+                    if config.FACE_IMAGE_ENABLED and person.face.tracking_active:
+                        person.face.image, person.face.mustache = FaceTracker.aligned_face_image(
+                            face_frame, person.face.landmarks, config.FACE_IMAGE_SIZE, config.FACE_IMAGE_MAX_BYTES)
                     last_faces[person.id] = person.face
                 else:
                     # Between detections the smoothed pose is re-placed into the person's current box
@@ -182,9 +262,18 @@ def main():
                     if person.id in last_faces:
                         person.face = last_faces[person.id]
 
+                if gesture_tracker is not None:
+                    if run_gestures:
+                        perf.next("Gesture tracker")
+                        gesture_tracker.update(person.id, person.pose, box, frame)
+                    person.hands = gesture_tracker.hands_dict(person.id)
+
                 # TODO for demonstration only
                 if "jawOpen" in person.face.blendshapes and person.face.blendshapes["jawOpen"] > 0.05:
                     notes[person.id] = "(JAW OPEN)"
+
+            if gesture_tracker is not None:
+                gesture_tracker.forget({p.id for p in scene_data.persons if p.is_tracking})
 
             perf.next("Network")
 
@@ -196,19 +285,30 @@ def main():
             packer._frame_data["frame_width"] = frame.shape[1]
             packer._frame_data["frame_height"] = frame.shape[0]
 
-            # Aspect-aware resize: Scale height to 240, adjust width proportionally
-            scale = 240.0 / frame.shape[0]
-            small_w = int(frame.shape[1] * scale)
-            small_frame = cv2.resize(frame, (small_w, 240))
+            if send_video:
+                # Aspect-aware resize: Scale height to 240, adjust width proportionally
+                scale = 240.0 / frame.shape[0]
+                small_w = int(frame.shape[1] * scale)
+                small_frame = cv2.resize(frame, (small_w, 240))
 
-            # Compress as JPEG
-            success, buffer = cv2.imencode('.jpg', small_frame, [cv2.IMWRITE_JPEG_QUALITY, 40])
-            if success:
-                frame_b64 = base64.b64encode(buffer).decode('utf-8')
-                packer.add_frame_image(frame_b64)
+                # Compress as JPEG, lowering quality until it fits comfortably in one UDP datagram
+                for quality in (40, 30, 20, 10):
+                    success, buffer = cv2.imencode('.jpg', small_frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                    if success and len(buffer) <= MAX_JPEG_BYTES:
+                        break
+                if success and len(buffer) <= MAX_JPEG_BYTES:
+                    frame_b64 = base64.b64encode(buffer).decode('utf-8')
+                    packer.add_frame_image(frame_b64)
 
             # 3. Serialise and send accumulated payload
+            frame_image = packer._frame_data.get("frame_base64")
             packet = packer.pack_frame()
+            if packet and len(packet) > MAX_UDP_PACKET_BYTES and frame_image:
+                # Too big for one datagram (e.g. two faces plus the calibration video): drop this camera frame
+                packer.add(scene_data)
+                packer._frame_data["frame_width"] = frame.shape[1]
+                packer._frame_data["frame_height"] = frame.shape[0]
+                packet = packer.pack_frame()
             if packet:
                 streamer.send(packet)
 
@@ -226,10 +326,10 @@ def main():
 
                     for person in scene_data.persons:
                         x1, y1, x2, y2 = clamped_box(person, frame)
-                        subframe = frame[y1:y2, x1:x2]
                         color = utils.player_color_from_id(person.id)
-                        FaceTracker.draw_landmarks(subframe, person.face.landmarks, color)
-                        PoseTracker.draw_landmarks(subframe, person.pose.landmarks, color)
+                        FaceTracker.draw_landmarks(frame[y1:y2, x1:x2], person.face.landmarks, color)
+                        px1, py1, px2, py2 = person.crop or pose_box(person, frame)
+                        PoseTracker.draw_landmarks(frame[py1:py2, px1:px2], person.pose.landmarks, color)
 
                     perf.end()
                     perf.draw(frame)
@@ -244,6 +344,8 @@ def main():
     finally:
         face_tracker.close()
         pose_tracker.close()
+        if gesture_tracker is not None:
+            gesture_tracker.close()
         streamer.close()
         cap.release()
         if out is not None:

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Optional, Tuple
 from models.base_data import BaseTrackingData
 from models.face_data import FaceTrackingData
 from models.pose_data import PoseTrackingData
@@ -14,6 +15,11 @@ class PersonTrackingData(BaseTrackingData):
 
     face: FaceTrackingData = field(default_factory=FaceTrackingData)
     pose: PoseTrackingData = field(default_factory=PoseTrackingData)
+
+    # Region (x1, y1, x2, y2, frame pixels) the pose landmarks are normalised to: the padded, clamped person box
+    crop: Optional[Tuple[int, int, int, int]] = None
+    # Open/closed state per wrist, keyed "hand15"/"hand16" (see HandGestureTracker.hands_dict)
+    hands: dict = field(default_factory=dict)
 
     occluded: bool = False
     # True while the person was not detected recently and the last known box is being held
@@ -43,5 +49,7 @@ class PersonTrackingData(BaseTrackingData):
             "frozen": self.frozen,
             "face": self.face.to_dict(),
             "pose": self.pose.to_dict(),
+            "crop": list(self.crop) if self.crop else [],
+            "hands": self.hands,
             "is_tracking": self.tracking_active
         }

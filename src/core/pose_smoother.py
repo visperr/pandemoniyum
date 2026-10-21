@@ -48,6 +48,8 @@ APPENDAGES = [
 ]
 
 TORSO_JOINTS = [11, 12, 23, 24]
+WRISTS = (15, 16)
+LEARN_CONFIDENCE = 0.8  # bone lengths are learned only from joints at least this confident
 
 
 class OneEuroFilter:
@@ -115,6 +117,8 @@ class _PersonState:
         self.lengths: Dict[str, float] = {}
         self.shoulder_ref: Optional[float] = None
         self.offsets: Dict[int, np.ndarray] = {}
+        self.speed_rejects: Dict[int, int] = {}  # consecutive too-fast readings per wrist
+        self.stretch_rejects: Dict[int, int] = {}  # consecutive clearly-seen over-stretched readings per wrist
 
 
 def _smoothstep(x: np.ndarray) -> np.ndarray:
@@ -154,6 +158,9 @@ class PoseSmoother:
         rest_blend_seconds: float = 1.5,
         dropout_hold_seconds: float = 0.4,
         reset_seconds: float = 1.0,
+        hold_unseen_hands: bool = True,
+        max_forearm_stretch: float = 1.35,
+        max_hand_speed: float = 6.0,
     ):
         """
         min_cutoff / beta   One Euro parameters for the arms. Lower min_cutoff = smoother when
@@ -171,7 +178,18 @@ class PoseSmoother:
                             direction to hanging down. Larger = holds the last direction longer.
         dropout_hold_seconds How long the last pose is held if the detector returns nothing.
         reset_seconds       If a person has had no pose for this long, filters start fresh.
+        hold_unseen_hands   Wrists that aren't clearly seen hold their last position instead of relaxing
+                            towards hanging down. The hands drive gameplay, so a hand the camera loses
+                            should stay put rather than drift.
+        max_forearm_stretch A wrist whose forearm is this many times longer than the person's learned
+                            forearm is a mis-detection (a real forearm only looks shorter in 2D).
+        max_hand_speed      A wrist moving faster than this (person heights per second) is a jump to a
+                            wrong spot; ignored unless it persists for more than 2 frames (then it is real).
+                            Mis-detected wrists get low confidence, so they are held instead of followed.
         """
+        self.hold_unseen_hands = hold_unseen_hands
+        self.max_forearm_stretch = max_forearm_stretch
+        self.max_hand_speed = max_hand_speed
         self.enabled = enabled
         self.d_cutoff = d_cutoff
         self.speed_floor = speed_floor
@@ -231,20 +249,38 @@ class PoseSmoother:
         ox = np.maximum(0.0, np.maximum(-meas[:, 0], meas[:, 0] - aspect))
         oy = np.maximum(0.0, np.maximum(-meas[:, 1], meas[:, 1] - 1.0))
         conf = conf * np.clip(1.0 - np.hypot(ox, oy) / self.edge_margin, 0.0, 1.0)
-        w = _smoothstep((conf - self.vis_low) / (self.vis_high - self.vis_low))
 
         dt = max(t - st.t, 1e-3) if st.t is not None else 1.0 / 30.0
+        raw_conf = conf
+        conf = self._gate_implausible_wrists(st, meas, conf, dt)
+        w = _smoothstep((conf - self.vis_low) / (self.vis_high - self.vis_low))
+
         box_h = max(box[3] - box[1], 1) / frame_h
         st.scale = box_h if st.scale is None else st.scale + 0.05 * (box_h - st.scale)
 
         filt = st.filter(meas, t, speed_scale=max(st.scale, 1e-3))
-        out = self._resolve(st, meas, filt, w, dt)
+        out = self._resolve(st, meas, filt, w, raw_conf, dt)
 
         # Joints that were not measured must not leave stale state in the filter.
         st.filter.seed(out, w < 0.05)
 
         st.out, st.vis, st.t = out, w, t
         return self._to_pose(out, w, box, frame_h)
+
+    def torso(self, pid: int, frame_h: int, t: float):
+        """(shoulder midpoint, shoulder width) in frame pixels from this person's latest pose, or None if stale."""
+        st = self._states.get(pid)
+        if not self.enabled or st is None or st.out is None or t - st.t > self.reset_seconds:
+            return None
+        ls, rs = st.out[L_SHOULDER, :2] * frame_h, st.out[R_SHOULDER, :2] * frame_h
+        return (ls + rs) / 2.0, max(float(np.linalg.norm(ls - rs)), 1.0)
+
+    def shoulder_reference(self, pid: int, frame_h: int) -> Optional[float]:
+        """This person's learned shoulder width in pixels (a slow maximum, so turning sideways doesn't shrink it)."""
+        st = self._states.get(pid)
+        if not self.enabled or st is None or st.shoulder_ref is None:
+            return None
+        return st.shoulder_ref * frame_h
 
     def reproject(self, pid: int, box: Tuple[int, int, int, int], frame_shape,
                   t: float) -> Optional[PoseTrackingData]:
@@ -263,6 +299,46 @@ class PoseSmoother:
         return self._to_pose(st.out, st.vis, box, frame_shape[0])
 
     # ------------------------------------------------------------------ internals
+
+    def _gate_implausible_wrists(self, st: _PersonState, meas, conf, dt) -> np.ndarray:
+        """
+        Lower the confidence of wrists (and their hand points) that the pose model has clearly misplaced:
+        an over-stretched forearm, or a jump faster than a hand can move. When the model half-loses an arm
+        it keeps reporting medium confidence while the wrist wanders; this stops the game following it.
+        """
+        if st.out is None:
+            return conf
+        raw = conf
+        conf = conf.copy()
+        # Reference forearm: the learned length, but never shorter than the anatomical estimate from the
+        # shoulder width (a forearm first seen pointing at the camera looks too short)
+        forearm = st.lengths.get("forearm")
+        if st.shoulder_ref is not None:
+            forearm = max(forearm or 0.0, LENGTH_PRIOR["forearm"] * st.shoulder_ref)
+        for (wrist, hand_points), elbow in zip(APPENDAGES, (13, 14)):
+            bad = False
+            if forearm:
+                stretched = np.hypot(*(meas[wrist, :2] - meas[elbow, :2])) > forearm * self.max_forearm_stretch
+                if stretched and min(raw[wrist], raw[elbow]) >= LEARN_CONFIDENCE:
+                    # Clearly seen and staying that way: the arm really is that long (learned below)
+                    st.stretch_rejects[wrist] = st.stretch_rejects.get(wrist, 0) + 1
+                    stretched = st.stretch_rejects[wrist] <= 2
+                elif not stretched:
+                    st.stretch_rejects[wrist] = 0
+                bad |= stretched
+
+            speed = np.hypot(*(meas[wrist, :2] - st.out[wrist, :2])) / dt / max(st.scale or 1.0, 1e-3)
+            if speed > self.max_hand_speed:
+                # A real fast move keeps showing up at the new spot; a glitch doesn't
+                st.speed_rejects[wrist] = st.speed_rejects.get(wrist, 0) + 1
+                bad |= st.speed_rejects[wrist] <= 2
+            else:
+                st.speed_rejects[wrist] = 0
+
+            if bad:
+                for j in (wrist, *hand_points):
+                    conf[j] *= 0.2
+        return conf
 
     def _held_or_inactive(self, pid, box, frame_shape, t) -> PoseTrackingData:
         """The detector found nothing: briefly hold the last pose instead of flickering off."""
@@ -313,7 +389,7 @@ class PoseSmoother:
             shoulder = float(np.hypot(*(out[L_SHOULDER, :2] - out[R_SHOULDER, :2])))
         return LENGTH_PRIOR[key] * max(shoulder, 0.05)
 
-    def _resolve(self, st: _PersonState, meas, filt, w, dt) -> np.ndarray:
+    def _resolve(self, st: _PersonState, meas, filt, w, conf, dt) -> np.ndarray:
         """Blend filtered measurements with skeleton-consistent estimates, joint by joint."""
         prev = st.out
         out = np.empty_like(meas)
@@ -347,6 +423,8 @@ class PoseSmoother:
             last_dir = _unit(last_dir, down)
             direction = _unit((1.0 - k) * last_dir + k * down, down)
             synth = np.array([p[0] + direction[0] * length, p[1] + direction[1] * length, p[2]])
+            if self.hold_unseen_hands and child in WRISTS and prev is not None:
+                synth = prev[child]
             mix(child, synth)
 
         # Face and hands: follow their anchor with the last known offset.
@@ -368,8 +446,12 @@ class PoseSmoother:
             width = float(np.hypot(*(out[L_SHOULDER, :2] - out[R_SHOULDER, :2])))
             if width > 1e-3:
                 st.shoulder_ref = _slow_max(st.shoulder_ref, width)
+        # Only from clearly seen joints (by the model's own confidence, before the wrist gates): a half-lost
+        # arm still has medium confidence while it wanders, and learning from it would teach the stretch
+        # gate that the stretched arm is normal. A clearly seen arm that only looks stretched because its
+        # length was learned while foreshortened must still be learned, or the gate would lock it out.
         for child, parent, key in CHAIN:
-            if w[child] >= 0.9 and w[parent] >= 0.9:
+            if conf[child] >= LEARN_CONFIDENCE and conf[parent] >= LEARN_CONFIDENCE:
                 length = float(np.hypot(*(out[child, :2] - out[parent, :2])))
                 if length > 1e-3:
                     st.lengths[key] = _slow_max(st.lengths.get(key), length)

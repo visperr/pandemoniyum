@@ -23,25 +23,28 @@ class PoseTracker(BaseTracker):
         base_options = python.BaseOptions(model_asset_path=model_path)
         options = vision.PoseLandmarkerOptions(
             base_options=base_options,
-            num_poses=1,
+            num_poses=self.num_poses,
             min_tracking_confidence=self.min_tracking_confidence,
             running_mode=vision.RunningMode.IMAGE
         )
         return vision.PoseLandmarker.create_from_options(options)
 
     def process_frame(self, cv2_frame: np.ndarray) -> PoseTrackingData:
+        candidates = self.process_frame_candidates(cv2_frame)
+        return candidates[0] if candidates else PoseTrackingData(tracking_active=False)
+
+    def process_frame_candidates(self, cv2_frame: np.ndarray) -> list:
+        """All poses found in the frame (up to num_poses), e.g. when another player overlaps the crop."""
         rgb_frame = cv2.cvtColor(cv2_frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
         self.last_result = self.model.detect(mp_image)
 
-        if not self.last_result.pose_landmarks or not self.last_result.pose_landmarks[0]:
-            return PoseTrackingData(tracking_active=False)
-
-        return PoseTrackingData(
-            landmarks=list(self.last_result.pose_landmarks[0][:POSE_LANDMARK_COUNT]),
-            tracking_active=True
-        )
+        return [
+            PoseTrackingData(landmarks=list(landmarks[:POSE_LANDMARK_COUNT]), tracking_active=True)
+            for landmarks in (self.last_result.pose_landmarks or [])
+            if landmarks
+        ]
 
     def draw_debug(self, frame: np.ndarray) -> None:
         """Render facial landmark points using pure OpenCV."""
