@@ -54,6 +54,8 @@ GESTURE_ENABLED = True
 GESTURE_FRAME_SKIP = 1               # Run the hand recognizer every N frames (1 = every frame: fastest, most reliable grabs)
 GESTURE_MIN_SCORE = 0.5              # Minimum hand detection confidence
 GESTURE_CROP_SCALE = 1.3             # Palm crop side length as a multiple of shoulder width
+GESTURE_SIGN_MIN_SCORE = 0.6         # Hand signs (thumbs up/down, victory, ...) need this classifier confidence
+GESTURE_SIGN_CONFIRM_READINGS = 3    # ...and this many identical readings in a row (each hand is read every other frame)
 
 # Camera image in the UDP packets. Unity asks for it only while the calibration screen shows it
 VIDEO_DEFAULT_ON = True              # Until Unity says otherwise

@@ -150,6 +150,8 @@ def main():
             model_dir=model_dir,
             min_score=config.GESTURE_MIN_SCORE,
             crop_scale=config.GESTURE_CROP_SCALE,
+            sign_min_score=config.GESTURE_SIGN_MIN_SCORE,
+            sign_confirm_readings=config.GESTURE_SIGN_CONFIRM_READINGS,
         )
 
     if config.LANDMARK_FRAME_SKIP < 1:
@@ -271,6 +273,9 @@ def main():
                 # TODO for demonstration only
                 if "jawOpen" in person.face.blendshapes and person.face.blendshapes["jawOpen"] > 0.05:
                     notes[person.id] = "(JAW OPEN)"
+                signs = [h.get("gesture") for h in person.hands.values() if h.get("gesture", "None") != "None"]
+                if signs:
+                    notes[person.id] = f"({', '.join(signs)})"
 
             if gesture_tracker is not None:
                 gesture_tracker.forget({p.id for p in scene_data.persons if p.is_tracking})
