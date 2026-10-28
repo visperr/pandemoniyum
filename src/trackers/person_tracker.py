@@ -48,6 +48,7 @@ class PersonTracker(BaseTracker):
 
         self.frame_count = 0
         self.last_tracks = []
+        self.ran_detection = False  # True if the last process_frame() ran the detector
 
         super().__init__(model_dir)
 
@@ -119,9 +120,12 @@ class PersonTracker(BaseTracker):
             capture_time=get_milliseconds_since_epoch()
         )
 
+        detection_frame = (self.frame_count - 1) % self.frame_skip == 0
+        self.ran_detection = detection_frame
+
         detections, embeddings = self.detect(frame)
 
-        if (self.frame_count - 1) % self.frame_skip == 0:
+        if detection_frame:
             tracks = self.tracker.update_tracks(detections, embeds=embeddings, frame=frame)
             self.last_tracks = tracks
         else:

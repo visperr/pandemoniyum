@@ -173,9 +173,7 @@ def main():
 
     try:
         while cap.isOpened():
-            # Keep the landmark timings across skipped frames (nothing is skipped when LANDMARK_FRAME_SKIP is 1)
-            perf.start(preserve=(config.LANDMARK_FRAME_SKIP > 1 and frame_count > 0
-                                 and (frame_count - 1) % config.LANDMARK_FRAME_SKIP == 0))
+            perf.start()
             perf.next("Frame capture")
 
             success, frame = cap.read()
@@ -197,6 +195,9 @@ def main():
 
             # 1. Process tracking components
             scene_data = person_tracker.process_frame(frame)
+            if not person_tracker.ran_detection:
+                # Detector skipped this frame: keep showing the cost of the last full run
+                perf.keep_previous("Person tracker")
             notes = {}
             run_gestures = gesture_tracker is not None and (frame_count - 1) % config.GESTURE_FRAME_SKIP == 0
 
