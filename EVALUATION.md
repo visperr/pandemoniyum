@@ -5,21 +5,28 @@ the data and what to report. Run all commands from `src/` with the project's vir
 
 ## Workflow
 
-1. **Record** a session: `python main.py --record --condition <label> --notes "<lux, distance, ...>" --no-preview`.
-   This writes `../recordings/<date>_<label>/` with `meta.json` (condition, config values), `frames.jsonl`
+1. **Record** a session: `python main.py --record --condition <label> --subject P1 --distance 2.0 --lux 450
+   --shoulder-width-mm 380 --no-preview`.
+   This writes `../recordings/<date>_<label>/` with `meta.json` (condition, impact factors, config values), `frames.jsonl`
    (per frame: timestamps, stage timings, frame brightness and, per player, the pose before smoothing, the
    pose that was sent and the hand states) and `raw.mp4` (the camera frames, for annotation and replay).
    Writing runs on a background thread so the recording hardly changes the timings it measures.
 2. **Annotate** ground truth where a metric needs it: `python -m evaluation.annotate keypoints|events <session>`.
 3. **Report**: `python -m evaluation.report <session> [--camera-latency-ms N] [--plots]` writes
    `report.md` and `metrics.json` into the session folder.
-4. Separate tools: `evaluation.missing_keypoints` (synthetic occlusion test), `evaluation.compare` (lighting
-   table), `evaluation.camera_latency` (camera delay), `evaluation.udp_monitor` (rate as Unity receives it).
+4. Separate tools: `evaluation.missing_keypoints` (synthetic occlusion test), `evaluation.compare` (tables
+   per lighting level, distance, subject, with the spread over repetitions), `evaluation.camera_latency` (camera delay), `evaluation.udp_monitor` (rate as Unity receives it).
 
 `python main.py --replay <session>` runs a recorded video back through the whole pipeline with the
 original frame times, so changed settings or simulated lighting are tested on exactly the same input.
 Distances are reported in pixels and in **% of shoulder width (%SW)**, which does not depend on how far the
-player stands from the camera. Multiply by the player's measured shoulder width (about 40 cm) for cm.
+player stands from the camera, and in **mm** when the player's shoulder width is known: measure it with a
+tape from shoulder joint to shoulder joint (the points you click when annotating, roughly 1-2 cm inside the
+bony edge of each shoulder) and pass `--shoulder-width-mm` when recording or to the report. Every px error
+is then scaled by that frame's shoulder width, so mm values are comparable between distances. They are 2D
+errors in the image plane: exact for joints about as far from the camera as the shoulders, and they say
+nothing about depth (z is not evaluated). The tape measurement itself is uncertain by a few percent, which
+scales all mm values by the same amount.
 
 ## Recording protocol
 
@@ -32,7 +39,28 @@ lighting condition, record:
 | `dynamic_<light>` | 30-60 s | Slow arm waves, fast reaches to the sides and up, reaching across the body |
 | `gestures_<light>` | 2-3 min | Per hand 20 grab + release cycles, 10 thumbs-up, 10 arm moves from rest, pausing ~1 s between |
 
-Write the light level (a phone lux meter app is enough), distance to the camera and the player in `--notes`.
+Measure the light level at the player with a phone lux meter app; it goes in `--lux` (see below).
+
+### Impact factors: repetition, lighting, distance, subjects
+
+Store each factor as a field, not only in the notes, so the results can be grouped by it:
+
+| Factor | Option | Suggested levels |
+|---|---|---|
+| Subject | `--subject P1` (an anonymous code) | at least 3 players, differing in height, build and clothing (long sleeves vs. short, dark vs. light) |
+| Distance | `--distance 2.0` (metres, floor to the camera) | the game's range, e.g. 1.5, 2.5 and 3.5 m |
+| Lighting | `--lux 450` | see section 6 |
+| Repetition | the same options recorded several times | 3 repetitions per combination |
+| Shoulder width | `--shoulder-width-mm 380` | per subject, for errors in mm |
+
+Vary one factor at a time from a baseline (e.g. P1, 2.5 m, office light) instead of recording every
+combination. A replay inherits the factors of the session it replays.
+
+`python -m evaluation.compare <sessions...> --by distance` (or `subject`, `lux`, `brightness`, `condition`,
+or several such as `--by subject distance`) adds a table with one row per level: the number of sessions
+(repetitions) and the mean ± standard deviation of pose found, keypoint and wrist detection, wrist jitter,
+PCK@0.2, error in mm, 1% low FPS and the deviation from a reference. The standard deviation over
+repetitions tells you whether a difference between two levels is bigger than the run-to-run variation.
 
 ---
 
@@ -58,7 +86,8 @@ found at all, how often the person box was frozen, and for the sent pose the sha
 60 evenly spaced frames; you click each keypoint or press `n` when it cannot be seen. Per keypoint, for
 the pose model's output and for the sent (smoothed) pose:
 
-- mean and median pixel error, and mean error in %SW (normalised mean error)
+- mean and median pixel error, mean error in %SW (normalised mean error) and, with the shoulder width,
+  mean and median error in mm
 - **PCK@0.1 / 0.2 / 0.5**: the share of visible ground-truth keypoints predicted within 0.1 / 0.2 / 0.5
   shoulder widths (a frame without a pose counts as a miss)
 - recall and precision of the visibility flag: does visibility ≥ 0.5 mean the joint really can be seen?
@@ -67,8 +96,9 @@ the pose model's output and for the sent (smoothed) pose:
 
 Click accuracy limits the error you can measure: annotate 10 frames twice and report that difference as the floor.
 
-**Report:** the per-keypoint table (detection rate, mean error px and %SW, PCK@0.2, precision/recall), for raw
-and sent, one player and two players. Emphasise the wrists.
+**Report:** the per-keypoint table (detection rate, mean error px, %SW and mm, PCK@0.2, precision/recall), for raw
+and sent, one player and two players, and the error per distance and per subject (`compare --by`). Emphasise
+the wrists.
 
 ## 2. Jitter (stationary and dynamic)
 
@@ -161,12 +191,15 @@ drawing and display time; record with it on as well if you want to show that cos
 - **Per-stage time** (person detector, which runs every 2nd frame, so its "ran" and "predicted" frames are
   listed separately; pose; smoother; face; gestures; network) on the frames where the stage ran.
 - **Output rate** (packets/s) and **interval** spread (rate jitter); **camera rate** and stale frames skipped.
+- **Low-percentile frame rate**: the mean only shows the average; stutter shows in the slow frames. **5% / 1%
+  low** = the average rate over the slowest 5% / 1% of packet intervals (the usual measure in games), plus the
+  slowest one-second window and the share of seconds below 25 fps. `udp_monitor` prints the same as received.
 - **Effective update rates**: the pose is re-measured at the pose rate, but each hand's grab state only at
   about half the gesture rate, because the recognizer alternates hands.
 - The first second (model warm-up) is left out.
 
-**Report:** mean, median, p95, p99 and max of end-to-end latency; the stage table; output, camera, pose and hand
-rates; the hardware (CPU/GPU, CUDA/MPS) and resolution; one vs. two players (the cost per player is
+**Report:** mean, median, p95, p99 and max of end-to-end latency; the stage table; output rate as mean, 5% and
+1% low FPS; camera, pose and hand rates; the hardware (CPU/GPU, CUDA/MPS) and resolution; one vs. two players (the cost per player is
 roughly the pose + face + gesture stages). Cross-check the rate Unity receives with `udp_monitor` (Unity closed).
 
 ## 6. Influence of lighting conditions
@@ -174,7 +207,7 @@ roughly the pose + face + gesture stages). Cross-check the rate Unity receives w
 Two complementary experiments:
 
 - **Real lighting.** Repeat the protocol under e.g. bright (~500 lux, office), dim (~50 lux, one lamp),
-  backlit (window behind the player) and side-lit. Record the lux value in `--notes`; the mean frame
+  backlit (window behind the player) and side-lit. Record the lux value with `--lux`; the mean frame
   brightness is logged automatically. Annotate ~30 keypoint frames per condition for PCK.
 - **Simulated lighting on identical input.** Replay one normally lit session at decreasing brightness, with
   sensor noise like a camera raising its gain:
@@ -188,19 +221,22 @@ Two complementary experiments:
   Each run is compared frame by frame with the brightness-1.0 replay (use that replay as the reference,
   not the original session, so video re-encoding is not counted as an error).
 
-`python -m evaluation.compare <sessions...> [--reference <sim_b1.0 session>] --out lighting.md` makes one row per
-session: brightness, player tracked, pose found, keypoint and wrist detection rate, wrist visibility,
-hand recognized ("hand seen"), stationary wrist jitter, PCK against annotations, and the deviation from the reference.
+`python -m evaluation.compare <sessions...> --by lux|brightness [--reference <sim_b1.0 session>] --out lighting.md`
+makes a table per lighting level (mean ± SD over repetitions) and one row per session: brightness, player tracked, pose found, keypoint and wrist detection rate, wrist visibility,
+hand recognized ("hand seen"), stationary wrist jitter, PCK and mm error against annotations, FPS, and the
+deviation from the reference. Use `--by lux` (or `condition`) for real lighting and `--by brightness` for simulated.
 
 **Report:** the table and a plot of detection rate / hand-seen rate against brightness or lux. Say at which level
 each part degrades: usually the hand recognizer first, then the wrists, then the whole pose.
 
 ## What to report: checklist
 
+- [ ] Experimental design: subjects, distances, lighting levels, repetitions per combination, camera and hardware
 - [ ] Keypoint definition table and the annotation protocol (frames, annotator floor)
-- [ ] Detection rate, error (px, %SW), PCK@0.2, visibility precision/recall: raw vs. sent, 1 and 2 players
+- [ ] Detection rate, error (px, %SW, mm), PCK@0.2, visibility precision/recall: raw vs. sent, 1 and 2 players
 - [ ] Stationary and dynamic jitter, raw vs. sent, reduction and the lag it costs
 - [ ] Gesture/motion delay per event type, split into camera, processing and algorithmic parts, plus false triggers/min
 - [ ] How missing keypoints are handled (section 4), with the synthetic error-vs-gap-length results and the as-occurred statistics
-- [ ] Latency distribution, per-stage times, output and update rates, hardware
+- [ ] Latency distribution, per-stage times, output rate (mean, 5% and 1% low FPS) and update rates, hardware
+- [ ] Results per distance and per subject (mean ± SD over repetitions)
 - [ ] Lighting table (real and simulated) and the brightness at which tracking breaks down

@@ -83,11 +83,20 @@ class PerformanceMonitor:
             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2
         )
 
+    def _draw_fps(self, frame, fps):
+        """Tracking rate in the top-left corner, white on a dark box so it stays readable when shrunk."""
+        text = f"FPS: {fps:.0f}"
+        font, scale, thickness = cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3
+        (w, h), baseline = cv2.getTextSize(text, font, scale, thickness)
+        pad = 10
+        cv2.rectangle(frame, (0, 0), (w + 2 * pad, h + baseline + 2 * pad), (0, 0, 0), -1)
+        cv2.putText(frame, text, (pad, pad + h), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
     def draw(self, frame):
         if self.window:
             average = sum(self.window) / len(self.window)
             fps = 1 / average if average > 0 else 0
-            self._draw_statistic(frame, "Frame time", f"{average * 1000:.1f} ms ({fps:.0f} fps)", 0)
+            self._draw_fps(frame, fps)
 
-        for i, (name, (seconds, _)) in enumerate(sorted(self.stages.items(), key=lambda x: x[0].lower())):
-            self._draw_statistic(frame, name, f"{seconds * 1000:3.1f} ms", 1+i)
+        # for i, (name, (seconds, _)) in enumerate(sorted(self.stages.items(), key=lambda x: x[0].lower())):
+        #     self._draw_statistic(frame, name, f"{seconds * 1000:3.1f} ms", 1+i)

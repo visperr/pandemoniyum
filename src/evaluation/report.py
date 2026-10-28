@@ -47,31 +47,42 @@ def section_detection(det: dict) -> str:
 
 
 def section_error(err: dict) -> str:
+    sw_mm = err.get("shoulder_width_mm")
+    mm_note = (f" mm = scaled by the player's measured shoulder width ({fmt(float(sw_mm), 0)} mm): a 2D error in "
+               "the image plane, exact for joints about as far from the camera as the shoulders."
+               if sw_mm else " For errors in mm, record with --shoulder-width-mm or pass it to the report.")
     out = [f"## 1b. Keypoint error vs. ground truth\n\n{err['frames']} annotated frames. "
-           "PCK@a = share of visible ground-truth keypoints predicted within a x shoulder width.\n"]
+           "PCK@a = share of visible ground-truth keypoints predicted within a x shoulder width." + mm_note + "\n"]
     for kind, title in (("raw", "Pose model output (before smoothing)"), ("pose", "Sent pose (after smoothing)")):
-        rows = [[name, r["gt_visible"], fmt(r["mean_px"]), fmt(r["median_px"]), fmt(r["mean_pct_sw"]),
-                 fmt(r["pck@0.1"], pct=True), fmt(r["pck@0.2"], pct=True), fmt(r["pck@0.5"], pct=True),
-                 fmt(r["recall"], pct=True), fmt(r["precision"], pct=True)]
+        rows = [[name, r["gt_visible"], fmt(r["mean_px"]), fmt(r["median_px"]), fmt(r["mean_pct_sw"])]
+                + ([fmt(r["mean_mm"], 0), fmt(r["median_mm"], 0)] if sw_mm else [])
+                + [fmt(r["pck@0.1"], pct=True), fmt(r["pck@0.2"], pct=True), fmt(r["pck@0.5"], pct=True),
+                   fmt(r["recall"], pct=True), fmt(r["precision"], pct=True)]
                 for name, r in err[kind].items()]
         out.append(f"### {title}\n\n" + table(
-            ["Keypoint", "GT visible", "Mean px", "Median px", "Mean %SW", "PCK@0.1", "PCK@0.2", "PCK@0.5",
-             "Recall", "Precision"], rows))
+            ["Keypoint", "GT visible", "Mean px", "Median px", "Mean %SW"]
+            + (["Mean mm", "Median mm"] if sw_mm else [])
+            + ["PCK@0.1", "PCK@0.2", "PCK@0.5", "Recall", "Precision"], rows))
     return "\n\n".join(out)
 
 
-def section_jitter(jit: dict) -> str:
+def section_jitter(jit: dict, shoulder_width_mm=None) -> str:
+    def cell(px, pct):
+        mm = f", {fmt(pct * shoulder_width_mm / 100.0, 1)} mm" if shoulder_width_mm and math.isfinite(pct) else ""
+        return f"{fmt(px, 2)} ({fmt(pct, 2)}{mm})"
+
     rows = []
     for name, k in jit["keypoints"].items():
         r, s = k["raw"], k["sent"]
         rows.append([name, k["frames"],
-                     f"{fmt(r['stationary_rms_px'], 2)} ({fmt(r['stationary_rms_pct_sw'], 2)})",
-                     f"{fmt(s['stationary_rms_px'], 2)} ({fmt(s['stationary_rms_pct_sw'], 2)})",
+                     cell(r["stationary_rms_px"], r["stationary_rms_pct_sw"]),
+                     cell(s["stationary_rms_px"], s["stationary_rms_pct_sw"]),
                      fmt(k["reduction_stationary_pct"], 0) + "%",
-                     f"{fmt(r['dynamic_resid_rms_px'], 2)} ({fmt(r['dynamic_resid_rms_pct_sw'], 2)})",
-                     f"{fmt(s['dynamic_resid_rms_px'], 2)} ({fmt(s['dynamic_resid_rms_pct_sw'], 2)})",
+                     cell(r["dynamic_resid_rms_px"], r["dynamic_resid_rms_pct_sw"]),
+                     cell(s["dynamic_resid_rms_px"], s["dynamic_resid_rms_pct_sw"]),
                      fmt(k["reduction_dynamic_pct"], 0) + "%", fmt(k["lag_ms"], 0), fmt(r["mean_speed_px_s"], 0)])
-    return (f"## 2. Jitter\n\nOn frames where the joint is clearly seen; px (%SW), shoulder width "
+    units = "px (%SW, mm)" if shoulder_width_mm else "px (%SW)"
+    return (f"## 2. Jitter\n\nOn frames where the joint is clearly seen; {units}, shoulder width "
             f"{fmt(jit['shoulder_width_px'])} px, {fmt(jit['fps'])} fps. Use the stationary columns for a "
             "session where the player holds still and the dynamic columns for one with movement.\n\n"
             + table(["Keypoint", "Frames", "Stationary raw", "Stationary sent", "Reduction", "Dynamic raw",
@@ -130,12 +141,17 @@ def section_latency(lat: dict) -> str:
         ["  of which processing ms", *(stat(lat["processing_ms"], k) for k in ("mean", "median", "p95", "p99", "max"))],
         ["Packet interval ms", *(stat(interval, k) for k in ("mean", "median", "p95", "p99", "max"))],
     ])
+    fps = lat.get("output_fps", {})
+    fps_line = (f"Frame rate: mean {stat(fps, 'mean')}, 5% low {stat(fps, 'low_5pct')}, 1% low "
+                f"{stat(fps, 'low_1pct')}, slowest second {stat(fps, 'min_1s', 0)} fps; "
+                f"{fmt(fps.get('below_25'), pct=True)} of seconds below 25 fps (x% low = mean rate over the "
+                "slowest x% of packet intervals).")
     rates = (f"Output rate **{fmt(lat['output_rate_hz'])} Hz**, camera delivered {fmt(lat['camera_rate_hz'])} Hz "
              f"({lat['dropped_frames']} stale frames skipped). Pose re-measured at {fmt(lat.get('pose_rate_hz'))} Hz, "
              f"each hand's grab state at {fmt(lat.get('hand_rate_hz'))} Hz.")
     return (f"## 5. Module latency and update rate\n\n{lat['frames']} frames over {fmt(lat['duration_s'])} s "
             f"(first {lat['warmup_frames_skipped']} warm-up frames left out)."
-            f"{preview}{live}\n\n{summary}\n\n{rates}\n\n### Per stage (ms, frames where the stage ran)\n\n"
+            f"{preview}{live}\n\n{summary}\n\n{rates}\n\n{fps_line}\n\n### Per stage (ms, frames where the stage ran)\n\n"
             + table(["Stage", "Mean", "Median", "p95", "Max", "Frames"], rows))
 
 
@@ -172,7 +188,17 @@ def plots(session: Session, pid: int, result: dict) -> list:
     return files
 
 
-def build_report(session: Session, pid: int, camera_latency_ms=None) -> tuple:
+def factors_line(session: Session) -> str:
+    """The recording factors that were given (subject, distance, light level, shoulder width)."""
+    labels = (("subject", "subject {}", None), ("distance_m", "distance {} m", 1), ("lux", "{} lux", 0),
+              ("shoulder_width_mm", "shoulder width {} mm", 0))
+    return ", ".join(label.format(fmt(float(value), digits) if digits is not None else value)
+                     for key, label, digits in labels if (value := session.factor(key)) is not None)
+
+
+def build_report(session: Session, pid: int, camera_latency_ms=None, shoulder_width_mm=None) -> tuple:
+    if shoulder_width_mm is None:
+        shoulder_width_mm = session.factor("shoulder_width_mm")
     result = {"session": session.name, "condition": session.condition, "person": pid,
               "detection": metrics.detection_rates(session, pid),
               "jitter": metrics.jitter(session, pid),
@@ -180,23 +206,25 @@ def build_report(session: Session, pid: int, camera_latency_ms=None) -> tuple:
               "latency": metrics.latency(session)}
     keypoint_annotations = session.annotations(KEYPOINT_ANNOTATIONS)
     if keypoint_annotations:
-        result["keypoint_error"] = metrics.keypoint_error(session, keypoint_annotations)
+        result["keypoint_error"] = metrics.keypoint_error(session, keypoint_annotations, shoulder_width_mm)
     event_annotations = session.annotations(EVENT_ANNOTATIONS)
     if event_annotations:
         result["delay"] = metrics.gesture_delay(session, event_annotations, camera_latency_ms=camera_latency_ms)
 
     lighting = session.meta.get("lighting") or {}
     simulated = {k: v for k, v in lighting.items() if v != (0.0 if k == "noise" else 1.0)}
+    factors = factors_line(session)
     parts = [f"# Tracking evaluation: {session.name}\n\n"
              f"Condition **{session.condition}**, source {session.meta.get('source')}, player {pid}, "
              f"mean frame brightness {fmt(float(np.nanmean(session.column('luma'))))} / 255"
              + (f", simulated lighting {simulated}" if simulated else "")
+             + (f", {factors}" if factors else "")
              + (f". Notes: {session.meta['notes']}" if session.meta.get("notes") else "") + ".",
              section_detection(result["detection"])]
     parts.append(section_error(result["keypoint_error"]) if "keypoint_error" in result else
                  "## 1b. Keypoint error vs. ground truth\n\nNo annotations yet: "
                  "`python -m evaluation.annotate keypoints SESSION`.")
-    parts.append(section_jitter(result["jitter"]))
+    parts.append(section_jitter(result["jitter"], shoulder_width_mm))
     parts.append(section_delay(result["delay"]) if "delay" in result else
                  "## 3. Motion / gesture recognition delay\n\nNo events annotated yet: "
                  "`python -m evaluation.annotate events SESSION`.")
@@ -211,13 +239,15 @@ def main():
     parser.add_argument("--person", type=int, help="player id (default: the one tracked longest)")
     parser.add_argument("--camera-latency-ms", type=float, help="from evaluation.camera_latency, added to delays")
     parser.add_argument("--plots", action="store_true", help="also save wrist trace and latency histogram PNGs")
+    parser.add_argument("--shoulder-width-mm", type=float,
+                        help="player's measured shoulder width, for errors in mm (default: from the recording)")
     args = parser.parse_args()
 
     session = Session(args.session)
     pid = args.person if args.person is not None else session.main_person()
     if pid is None:
         raise SystemExit("No player was tracked in this session")
-    result, markdown = build_report(session, pid, args.camera_latency_ms)
+    result, markdown = build_report(session, pid, args.camera_latency_ms, args.shoulder_width_mm)
     (session.path / "report.md").write_text(markdown)
     with open(session.path / "metrics.json", "w") as f:
         json.dump(result, f, indent=1, default=float)

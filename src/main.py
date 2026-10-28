@@ -12,6 +12,8 @@ import config
 import utils
 from core.data_packer import DataPacker
 from core.latest_frame_capture import LatestFrameCapture
+from core.macos_priority import keep_tracker_responsive
+from core.timed_video_writer import TimedVideoWriter
 from core.network_streamer import UDPStreamer
 from core.perf_monitor import PerformanceMonitor
 from core.pose_smoother import PoseSmoother
@@ -41,7 +43,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     ev.add_argument("--record", action="store_true", help="record a session for the metrics in src/evaluation")
     ev.add_argument("--condition", default="default",
                     help="label stored with the session, e.g. stationary_office or dynamic_dim")
-    ev.add_argument("--notes", default="", help="free text stored with the session (lux, distance, ...)")
+    ev.add_argument("--notes", default="", help="free text stored with the session")
+    ev.add_argument("--subject", help="who is playing (a code such as P1), for grouping results by subject")
+    ev.add_argument("--distance", type=float, metavar="M", help="player's distance from the camera in metres")
+    ev.add_argument("--lux", type=float, help="measured light level at the player")
+    ev.add_argument("--shoulder-width-mm", type=float, metavar="MM",
+                    help="player's measured shoulder width (joint to joint), to report errors in mm")
     ev.add_argument("--recordings-dir", default=config.RECORDINGS_DIR)
     ev.add_argument("--no-record-video", action="store_true", help="do not store the raw camera video")
     ev.add_argument("--replay", metavar="SESSION", help="run on a recorded session's video with its frame times")
@@ -51,6 +58,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     ev.add_argument("--noise", type=float, default=0.0, help="simulated lighting: sensor noise std (0-255)")
     ev.add_argument("--duration", type=float, help="stop after this many seconds")
     ev.add_argument("--no-preview", action="store_true", help="no preview window (lower, cleaner latency)")
+    ev.add_argument("--tracking-video", metavar="PATH",
+                    help="save the annotated tracking view as a real-time video (used by play_session.py)")
     return parser.parse_args(argv)
 
 
@@ -177,6 +186,10 @@ def main(args: argparse.Namespace):
     if args.no_preview:
         config.SHOW_PREVIEW = False
 
+    # Before any threads start: they inherit the priority
+    if keep_tracker_responsive():
+        print("Tracker marked as latency-critical (no App Nap while the game is in front)")
+
     streamer = UDPStreamer(ip=config.UDP_IP, port=config.UDP_PORT)
     packer = DataPacker()
 
@@ -241,6 +254,8 @@ def main(args: argparse.Namespace):
         source = "replay" if args.replay else ("camera" if config.USE_CAMERA else "video")
         recorder = SessionRecorder(args.recordings_dir, args.condition, {
             "notes": args.notes,
+            "factors": {"subject": args.subject, "distance_m": args.distance, "lux": args.lux,
+                        "shoulder_width_mm": args.shoulder_width_mm},
             "source": source,
             "source_session": str(Path(args.replay).resolve()) if args.replay else None,
             "video_path": config.VIDEO_PATH if source == "video" else None,
@@ -248,6 +263,9 @@ def main(args: argparse.Namespace):
             "preview": config.SHOW_PREVIEW,
             "config": config_snapshot(),
         }, record_video=not args.no_record_video and not args.replay)
+    tracking_video = TimedVideoWriter(args.tracking_video) if args.tracking_video else None
+    # perf_counter times -> wall clock, to line the tracking video up with the gameplay recording
+    epoch_offset = time.time() - time.perf_counter()
     # Fixed seed: the same simulated noise on every replay
     rng = np.random.default_rng(0)
 
@@ -430,8 +448,8 @@ def main(args: argparse.Namespace):
                                             scene_data, raw_poses, landmark_frame, run_gestures,
                                             person_tracker.ran_detection), raw_frame)
 
-            # 5. Preview and Debug overlay
-            if config.SHOW_PREVIEW:
+            # 5. Preview and Debug overlay (also drawn for the tracking video when there's no preview window)
+            if config.SHOW_PREVIEW or tracking_video is not None:
                 if config.DEBUG_MODE:
                     perf.next("Debug drawing")
 
@@ -449,11 +467,17 @@ def main(args: argparse.Namespace):
 
                 if config.SAVE_PREVIEW:
                     out.write(frame)
+                if tracking_video is not None:
+                    tracking_video.add(frame, t_capture + epoch_offset)
 
-                cv2.imshow("Tracking Preview", frame)
-                if cv2.pollKey() & 0xFF == ord('q'):
-                    break
+                if config.SHOW_PREVIEW:
+                    cv2.imshow("Tracking Preview", frame)
+                    if cv2.pollKey() & 0xFF == ord('q'):
+                        break
 
+    except KeyboardInterrupt:
+        # Ctrl+C, or play_session.py ending the session: stop cleanly so the recordings are complete
+        print("Tracker stopped.")
     finally:
         face_tracker.close()
         pose_tracker.close()
@@ -465,6 +489,8 @@ def main(args: argparse.Namespace):
             out.release()
         if recorder is not None:
             recorder.close()
+        if tracking_video is not None:
+            tracking_video.close()
         cv2.destroyAllWindows()
 
 

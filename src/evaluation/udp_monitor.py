@@ -16,6 +16,7 @@ import time
 import numpy as np
 
 import config
+from evaluation.metrics import fps_stats
 
 
 def main():
@@ -52,6 +53,9 @@ def main():
     print(f"{len(arrivals)} packets, {(len(arrivals) - 1) / (arrivals[-1] - arrivals[0]):.1f} Hz received")
     print(f"Interval ms: median {np.median(interval):.1f}, std {interval.std():.1f}, "
           f"p95 {np.percentile(interval, 95):.1f}, max {interval.max():.1f}")
+    fps = fps_stats(np.array(arrivals))
+    print(f"Frame rate: 5% low {fps['low_5pct']:.1f}, 1% low {fps['low_1pct']:.1f}"
+          + (f", slowest second {fps['min_1s']:.0f} fps" if "min_1s" in fps else ""))
     print(f"Packet size bytes: median {np.median(sizes):.0f}, max {max(sizes)}")
     if latencies:
         v = np.array(latencies)

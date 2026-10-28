@@ -76,6 +76,15 @@ class Session:
     def condition(self) -> str:
         return self.meta.get("condition", "")
 
+    def factor(self, name: str):
+        """A recording factor (subject, distance_m, lux, shoulder_width_mm); a replay inherits its source's."""
+        value = self.meta.get("factors", {}).get(name)
+        source = self.source_path()
+        if value is None and source is not None and (source / META_FILE).exists():
+            with open(source / META_FILE) as f:
+                value = json.load(f).get("factors", {}).get(name)
+        return value
+
     def config(self, name: str, default=None):
         return self.meta.get("config", {}).get(name, default)
 

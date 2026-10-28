@@ -24,13 +24,13 @@ video. All metrics are then computed **offline** from that recording, so:
 | Metric | Tool | Needs annotation? |
 |---|---|---|
 | Keypoint detection rate | `evaluation.report` | No |
-| Keypoint detection error (px, % shoulder width, PCK, visibility precision/recall) | `evaluation.report` | Yes, `annotate keypoints` |
+| Keypoint detection error (px, % shoulder width, mm, PCK, visibility precision/recall) | `evaluation.report` | Yes, `annotate keypoints` |
 | Jitter, stationary and dynamic (raw vs. smoothed, plus the lag smoothing adds) | `evaluation.report` | No |
 | Motion / gesture recognition delay (plus false grab triggers) | `evaluation.report`, `evaluation.camera_latency` | Yes, `annotate events` |
 | Missing-keypoint handling, as it happened | `evaluation.report` | No |
 | Missing-keypoint handling, synthetic occlusion test against known truth | `evaluation.missing_keypoints` | No |
-| Module latency and update rate | `evaluation.report`, `evaluation.udp_monitor` | No |
-| Influence of lighting (real or simulated) | `evaluation.compare` | Optional |
+| Module latency and update rate (incl. 5% / 1% low FPS) | `evaluation.report`, `evaluation.udp_monitor` | No |
+| Influence of lighting (real or simulated), distance and subject, with the spread over repetitions | `evaluation.compare --by` | Optional |
 
 ### New files
 
@@ -42,7 +42,7 @@ video. All metrics are then computed **offline** from that recording, so:
 | `src/evaluation/report.py` | Builds `report.md` + `metrics.json` (+ plots) for one session |
 | `src/evaluation/annotate.py` | Window for clicking ground-truth keypoints and marking movement onsets |
 | `src/evaluation/missing_keypoints.py` | Synthetic occlusion test of the missing-keypoint handling |
-| `src/evaluation/compare.py` | One table comparing sessions under different lighting |
+| `src/evaluation/compare.py` | Tables comparing sessions by lighting, distance, subject, ... (mean ± SD over repetitions) |
 | `src/evaluation/camera_latency.py` | Measures the camera's own delay with a flashing screen |
 | `src/evaluation/udp_monitor.py` | Listens in place of Unity and measures the received rate and latency |
 | `EVALUATION.md` | Method: definitions, protocol, what to report |
@@ -51,7 +51,7 @@ video. All metrics are then computed **offline** from that recording, so:
 
 | File | Change |
 |---|---|
-| `src/main.py` | Command-line options (`--record`, `--replay`, `--video`, `--brightness`, ...); writes one record per frame while recording; fills `scene.capture_time` (epoch ms) and `scene.processing_time` (ms) in the UDP packet, which used to be always 0 |
+| `src/main.py` | Command-line options (`--record`, `--replay`, `--video`, `--brightness`, `--subject`, `--distance`, `--lux`, `--shoulder-width-mm`, ...); writes one record per frame while recording; fills `scene.capture_time` (epoch ms) and `scene.processing_time` (ms) in the UDP packet, which used to be always 0 |
 | `src/core/latest_frame_capture.py` | Stamps each camera frame with its arrival time (`capture_time`) and counts the stale frames it skips (`dropped`) |
 | `src/core/perf_monitor.py` | `snapshot()`: the per-stage timings of the current frame, for the log |
 | `src/config.py` | `RECORDINGS_DIR = "../recordings"` |
@@ -89,12 +89,16 @@ Every tool has `--help`.
 ### Step 1: Record a session
 
 ```bash
-python main.py --record --condition stationary_office --notes "450 lux, 2 m from camera, player A" --no-preview
+python main.py --record --condition stationary_office --subject P1 --distance 2.5 --lux 450 --shoulder-width-mm 380 --no-preview
 ```
 
 - `--condition` is the label in the folder name and in reports. Use names like
   `stationary_office`, `dynamic_dim`, `gestures_backlit`.
-- `--notes` is free text stored with the session. Write the lux, distance and player here.
+- `--subject`, `--distance` (metres) and `--lux` are the impact factors. They are stored as fields, so
+  `compare --by` can group sessions by them. Use anonymous codes like `P1` for subjects.
+- `--shoulder-width-mm` is the player's shoulder width, measured with a tape from shoulder joint to shoulder
+  joint. With it, errors and jitter are also reported in mm. You can also give it to the report later.
+- `--notes` is free text stored with the session (anything else worth remembering).
 - `--no-preview` turns off the preview window for clean latency numbers. Without it you can stop with `q`.
   With it, stop with `Ctrl+C` or use `--duration 60` to stop after 60 seconds.
 - Recording to a different folder: `--recordings-dir PATH`. No video (smaller, but no annotation or replay):
@@ -104,12 +108,13 @@ This creates `../recordings/<date>_<time>_<condition>/` containing:
 
 | File | Content |
 |---|---|
-| `meta.json` | condition, notes, source, simulated lighting, all config values |
+| `meta.json` | condition, impact factors, notes, source, simulated lighting, all config values |
 | `frames.jsonl` | one line per frame: timestamps, stage timings, brightness, and per player the box, the pose before smoothing (`raw`), the sent pose (`pose`) and the hand states |
 | `raw.mp4` | the camera video, unmirrored, exactly as the tracker received it |
 
 Which sessions to record (per lighting condition) is in EVALUATION.md under "Recording protocol":
-a stationary one, a dynamic one, and a gestures one.
+a stationary one, a dynamic one, and a gestures one. Record each one 3 times, and vary distance and
+subject one at a time from a baseline (EVALUATION.md, "Impact factors").
 
 ### Step 2: Annotate ground truth (only for error and delay)
 
@@ -179,11 +184,18 @@ Writes into the session folder:
 - `metrics.json` with all numbers, for your own tables or plots
 - with `--plots`: `plot_wrist_trace.png` (raw vs. smoothed wrist) and `plot_latency.png` (latency histogram)
 
-Sections that need annotations say so until you have made them. How to read each section:
+Sections that need annotations say so until you have made them. The first line lists the impact factors
+of the session. If the session was recorded without `--shoulder-width-mm`, add `--shoulder-width-mm 380` here
+to get the mm columns. How to read each section:
+
+- **Error in mm**: px error scaled by the measured shoulder width on each frame. It is a 2D error in the image
+  plane, exact for joints about as far from the camera as the shoulders; depth is not evaluated.
 
 - **Jitter**: use the *stationary* columns for a stationary session and the *dynamic* columns for a dynamic one.
 - **Latency**: only meaningful for live camera sessions recorded with `--no-preview`. For video files it shows
   processing time only, and the report says so.
+- **Frame rate**: mean, 5% low and 1% low FPS (the average rate over the slowest 5% / 1% of frames), the
+  slowest one-second window, and the share of seconds below 25 fps. The lows show stutter the mean hides.
 - **Delay**: *algorithmic* = frames of smoothing/debouncing; *end-to-end* = camera delivers the frame → packet
   sent (live sessions only); *total* = end-to-end + camera delay.
 
@@ -202,12 +214,26 @@ Output: `missing_keypoints.md`, `.json` and with `--plots` `plot_missing_keypoin
 Other gap lengths: `--gaps 0.5 1 3`. If a table is empty, the session had no stretches where those joints were
 clearly visible long enough.
 
-### Step 6: Compare lighting conditions
+### Step 6: Compare lighting, distance and subjects
 
-**Real lighting**: record the same protocol under each light, then:
+`compare` makes one row per session. With `--by`, it also makes a table with one row per level of a factor:
+how many sessions (repetitions) it had, and the mean ± standard deviation of each number over them.
+Factors: `condition`, `subject`, `distance`, `lux`, `brightness`, `noise`; several at once also work
+(`--by subject distance`).
+
+**Distance and subjects**:
 
 ```bash
-python -m evaluation.compare ../recordings/*_stationary_* --out lighting_real.md
+python -m evaluation.compare ../recordings/*_stationary_* --by distance --out distance.md
+```
+```bash
+python -m evaluation.compare ../recordings/*_stationary_* --by subject --out subjects.md
+```
+
+**Real lighting**: record the same protocol under each light (with `--lux`), then:
+
+```bash
+python -m evaluation.compare ../recordings/*_stationary_* --by lux --out lighting_real.md
 ```
 
 **Simulated lighting**: replay one normally lit session darker. Replays reuse the original video and frame times:
@@ -222,12 +248,13 @@ python main.py --replay ../recordings/<session> --record --no-preview --conditio
 python main.py --replay ../recordings/<session> --record --no-preview --condition sim_b0.2 --brightness 0.2 --noise 8
 ```
 ```bash
-python -m evaluation.compare ../recordings/*_sim_* --reference ../recordings/<..._sim_b1.0> --out lighting_sim.md
+python -m evaluation.compare ../recordings/*_sim_* --by brightness --reference ../recordings/<..._sim_b1.0> --out lighting_sim.md
 ```
 
 Use the **brightness 1.0 replay** as `--reference`, not the original session, so differences from
 re-encoding the video are not counted as lighting effects. `--gamma` (>1 darkens shadows) is also available.
-The table has one row per session, from brightest to darkest. Replays use the annotations of the session
+The per-session table goes from brightest to darkest. A replay keeps the subject, distance and lux of the
+session it replayed, so use `--by brightness` (not `lux`) for simulated lighting. Replays use the annotations of the session
 they replayed, so PCK also works for them.
 
 ### Step 7 (optional): Check the rate Unity receives
@@ -238,21 +265,22 @@ Close Unity first, since it uses the same port. Start the tracker, then:
 python -m evaluation.udp_monitor --seconds 30
 ```
 
-Prints received packets per second, interval spread, packet sizes, and the latency from capture to arrival.
+Prints received packets per second, 5% and 1% low FPS, interval spread, packet sizes, and the latency from
+capture to arrival.
 
 ### Quick reference
 
 | Command | Purpose |
 |---|---|
-| `python main.py --record --condition X --notes "..." --no-preview [--duration S]` | record a live session |
+| `python main.py --record --condition X --subject P1 --distance M --lux L --shoulder-width-mm MM --no-preview [--duration S]` | record a live session |
 | `python main.py --video FILE --record ...` | record from a video file |
 | `python main.py --replay SESSION --record [--brightness B --noise N --gamma G]` | replay a session, optionally darker |
 | `python -m evaluation.annotate keypoints SESSION [--count N]` | click ground-truth keypoints |
 | `python -m evaluation.annotate events SESSION` | mark movement onsets |
 | `python -m evaluation.camera_latency` | camera delay |
-| `python -m evaluation.report SESSION [--camera-latency-ms N] [--plots]` | all metrics for one session |
+| `python -m evaluation.report SESSION [--camera-latency-ms N] [--shoulder-width-mm MM] [--plots]` | all metrics for one session |
 | `python -m evaluation.missing_keypoints SESSION [--plots]` | synthetic occlusion test |
-| `python -m evaluation.compare SESSIONS... [--reference SESSION]` | lighting table |
+| `python -m evaluation.compare SESSIONS... [--by FACTOR...] [--reference SESSION]` | tables per lighting, distance, subject |
 | `python -m evaluation.udp_monitor` | rate as received (Unity closed) |
 
 ### Things to keep in mind

@@ -74,20 +74,24 @@ def detection_rates(session: Session, pid: int) -> dict:
     return out
 
 
-def keypoint_error(session: Session, annotations: dict) -> dict:
+def keypoint_error(session: Session, annotations: dict, shoulder_width_mm: Optional[float] = None) -> dict:
     """
     Error against clicked ground truth (annotate.py keypoints), for the raw model output and the sent pose.
     error: pixel distance where the keypoint is visible in the ground truth and a pose exists.
+    mm: the error scaled by the player's measured shoulder width on that frame (2D, in the image plane;
+      exact only for joints about as far from the camera as the shoulders).
     pck@a: share of ground-truth-visible keypoints that were predicted within a x shoulder width (a frame
     without a pose counts as a miss). precision/recall: the visibility flag as a detector of "the joint can
     be seen" (a confident prediction of a joint that is actually hidden is a false positive).
     """
     pid = annotations["person"]
-    result = {"person": pid, "frames": len(annotations["frames"])}
+    if shoulder_width_mm is None:
+        shoulder_width_mm = session.factor("shoulder_width_mm")
+    result = {"person": pid, "frames": len(annotations["frames"]), "shoulder_width_mm": shoulder_width_mm}
     for kind in ("raw", "pose"):
         track = session.track(pid, kind)
         fallback_sw = session.track(pid, "pose").shoulder_width()
-        per = {name: {"err": [], "norm": [], "hit": {a: [] for a in PCK_THRESHOLDS},
+        per = {name: {"err": [], "norm": [], "mm": [], "hit": {a: [] for a in PCK_THRESHOLDS},
                       "tp": 0, "fp": 0, "fn": 0, "tn": 0} for name in KEYPOINTS}
         for i_str, points in annotations["frames"].items():
             k = session.index.get(int(i_str))
@@ -109,15 +113,17 @@ def keypoint_error(session: Session, annotations: dict) -> dict:
                 if np.isfinite(err):
                     stats["err"].append(err)
                     stats["norm"].append(100.0 * err / sw)
+                    if shoulder_width_mm:
+                        stats["mm"].append(err / sw * shoulder_width_mm)
                 for a in PCK_THRESHOLDS:
                     stats["hit"][a].append(err <= a * sw)
 
-        rows, pooled = {}, {"err": [], "norm": [], "hit": {a: [] for a in PCK_THRESHOLDS},
+        rows, pooled = {}, {"err": [], "norm": [], "mm": [], "hit": {a: [] for a in PCK_THRESHOLDS},
                             "tp": 0, "fp": 0, "fn": 0, "tn": 0}
         for name, stats in per.items():
             rows[name] = _error_row(stats)
-            pooled["err"] += stats["err"]
-            pooled["norm"] += stats["norm"]
+            for key in ("err", "norm", "mm"):
+                pooled[key] += stats[key]
             for a in PCK_THRESHOLDS:
                 pooled["hit"][a] += stats["hit"][a]
             for c in ("tp", "fp", "fn", "tn"):
@@ -135,6 +141,8 @@ def _error_row(stats: dict) -> dict:
         "mean_px": float(np.mean(stats["err"])) if stats["err"] else float("nan"),
         "median_px": float(np.median(stats["err"])) if stats["err"] else float("nan"),
         "mean_pct_sw": float(np.mean(stats["norm"])) if stats["norm"] else float("nan"),
+        "mean_mm": float(np.mean(stats["mm"])) if stats["mm"] else float("nan"),
+        "median_mm": float(np.median(stats["mm"])) if stats["mm"] else float("nan"),
         "recall": tp / (tp + fn) if tp + fn else float("nan"),
         "precision": tp / (tp + fp) if tp + fp else float("nan"),
     }
@@ -400,12 +408,35 @@ def missing_keypoints(session: Session, pid: int) -> dict:
 
 # ---------------------------------------------------------------------------- 5. module latency / rate
 
+def fps_stats(times: np.ndarray) -> dict:
+    """
+    Frame rate from output timestamps (s). "x% low" = the average rate over the slowest x% of frame
+    intervals (the usual games measure, it shows stutter that the mean hides); min_1s = the slowest
+    one-second window; below_25 = share of one-second windows under 25 fps.
+    """
+    times = times[np.isfinite(times)]
+    if len(times) < 2:
+        return {"n": 0}
+    interval = np.diff(times)
+    slowest = np.sort(interval)[::-1]
+    out = {"n": len(interval), "mean": len(interval) / float(times[-1] - times[0])}
+    for share, key in ((0.05, "low_5pct"), (0.01, "low_1pct")):
+        out[key] = 1.0 / float(np.mean(slowest[:max(1, int(round(share * len(slowest))))]))
+    edges = np.arange(times[0], times[-1] - 1.0 + 1e-9, 0.5)  # 1 s windows every 0.5 s
+    if len(edges):
+        per_window = np.searchsorted(times, edges + 1.0) - np.searchsorted(times, edges)
+        out["min_1s"] = float(per_window.min())
+        out["below_25"] = float((per_window < 25).mean())
+    return out
+
+
 def latency(session: Session, warmup_s: float = 1.0) -> dict:
     """
     end_to_end_ms: camera delivering a frame -> its UDP packet sent (includes waiting for the loop).
     queue_wait_ms: camera delivering a frame -> the loop picking it up.
     stages_ms: time per pipeline stage on the frames where that stage really ran.
     output_rate_hz: packets per second; interval_ms: time between packets (its spread is the rate jitter).
+    output_fps: mean, 5% / 1% low and slowest-second rate of the packets (fps_stats).
     camera_rate_hz: frames the camera delivered per second (processed + dropped as stale).
     pose_rate_hz / hand_rate_hz: how often a player's pose / each hand's state is actually re-measured.
     The first warmup_s seconds are left out: the models' first runs are much slower (initialisation).
@@ -439,6 +470,7 @@ def latency(session: Session, warmup_s: float = 1.0) -> dict:
         "processing_ms": summarize(1000.0 * (t_send - t_read)),
         "interval_ms": summarize(1000.0 * np.diff(t_send)),
         "output_rate_hz": (n - 1) / duration if duration > 0 else float("nan"),
+        "output_fps": fps_stats(t_send),
         "camera_rate_hz": (n - 1 + dropped[-1] - dropped[0]) / float(t_capture[-1] - t_capture[0])
         if n > 1 and t_capture[-1] > t_capture[0] else float("nan"),
         "dropped_frames": int(dropped[-1] - dropped[0]) if n else 0,
@@ -454,18 +486,33 @@ def latency(session: Session, warmup_s: float = 1.0) -> dict:
     return out
 
 
-# ---------------------------------------------------------------------------- 6. lighting
+# ---------------------------------------------------------------------------- 6. lighting and other factors
 
-def lighting_summary(session: Session, pid: Optional[int] = None, reference: Optional[Session] = None) -> dict:
+FACTORS = ("condition", "subject", "distance", "lux", "brightness", "noise")
+
+
+def factor_value(session: Session, name: str):
+    """A session's value of one impact factor (see compare.py --by)."""
+    if name == "condition":
+        return session.condition
+    if name in ("brightness", "noise"):
+        return (session.meta.get("lighting") or {}).get(name, 1.0 if name == "brightness" else 0.0)
+    return session.factor({"distance": "distance_m"}.get(name, name))
+
+
+def session_summary(session: Session, pid: Optional[int] = None, reference: Optional[Session] = None) -> dict:
     """
-    One row per session for comparing lighting conditions: brightness, detection, hand recognition, jitter,
-    error against ground truth (if annotated) and, for a replay with simulated lighting, the deviation from
-    the reference (normally lit) replay of the same video.
+    One row per session for comparing conditions (lighting, distance, subject, ...): brightness, detection,
+    hand recognition, jitter, frame rate, error against ground truth (if annotated) and, for a replay with
+    simulated lighting, the deviation from the reference (normally lit) replay of the same video.
     """
     pid = session.main_person() if pid is None else pid
     luma = session.column("luma")
     row = {"session": session.name, "condition": session.condition, "lighting": session.meta.get("lighting"),
+           "factors": {name: factor_value(session, name) for name in FACTORS},
            "luma_mean": float(np.nanmean(luma)), "luma_std": float(np.nanstd(luma)), "person": pid}
+    fps = latency(session)["output_fps"]
+    row["fps_mean"], row["fps_low_1pct"] = fps.get("mean", float("nan")), fps.get("low_1pct", float("nan"))
     if pid is None:
         row["note"] = "no player tracked"
         return row
@@ -483,8 +530,8 @@ def lighting_summary(session: Session, pid: Optional[int] = None, reference: Opt
 
     jit = jitter(session, pid, keypoints=CRITICAL_KEYPOINTS)["keypoints"]
     for kind in ("raw", "sent"):
-        row[f"wrist_jitter_{kind}_pct_sw"] = float(np.nanmean(
-            [jit[k][kind]["stationary_rms_pct_sw"] for k in CRITICAL_KEYPOINTS]))
+        values = np.array([jit[k][kind]["stationary_rms_pct_sw"] for k in CRITICAL_KEYPOINTS], dtype=float)
+        row[f"wrist_jitter_{kind}_pct_sw"] = float(np.nanmean(values)) if np.isfinite(values).any() else float("nan")
 
     annotations = session.annotations("annotations_keypoints.json")
     if annotations:
@@ -492,6 +539,7 @@ def lighting_summary(session: Session, pid: Optional[int] = None, reference: Opt
         for kind in ("raw", "pose"):
             row[f"gt_{kind}_pck@0.2"] = err[kind]["all"]["pck@0.2"]
             row[f"gt_{kind}_mean_pct_sw"] = err[kind]["all"]["mean_pct_sw"]
+            row[f"gt_{kind}_mean_mm"] = err[kind]["all"]["mean_mm"]
 
     if reference is not None:
         row["vs_reference"] = deviation_from(session, reference, pid)
