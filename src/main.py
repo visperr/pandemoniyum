@@ -1,3 +1,4 @@
+import argparse
 import cv2
 import sys
 import os
@@ -14,6 +15,8 @@ from core.latest_frame_capture import LatestFrameCapture
 from core.network_streamer import UDPStreamer
 from core.perf_monitor import PerformanceMonitor
 from core.pose_smoother import PoseSmoother
+from core.session_recorder import (SessionRecorder, SessionReplayCapture, frame_luma, pose_rows,
+                                   simulate_lighting)
 from core import pose_ownership
 from trackers.face_tracker import FaceTracker
 from trackers.hand_gesture_tracker import HandGestureTracker
@@ -32,7 +35,28 @@ def get_asset_path(relative_path: str) -> str:
     return os.path.join(os.path.abspath("."), relative_path)
 
 
-def open_video_capture() -> cv2.VideoCapture:
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="PANdemoniYUM motion tracking engine")
+    ev = parser.add_argument_group("evaluation (see EVALUATION.md)")
+    ev.add_argument("--record", action="store_true", help="record a session for the metrics in src/evaluation")
+    ev.add_argument("--condition", default="default",
+                    help="label stored with the session, e.g. stationary_office or dynamic_dim")
+    ev.add_argument("--notes", default="", help="free text stored with the session (lux, distance, ...)")
+    ev.add_argument("--recordings-dir", default=config.RECORDINGS_DIR)
+    ev.add_argument("--no-record-video", action="store_true", help="do not store the raw camera video")
+    ev.add_argument("--replay", metavar="SESSION", help="run on a recorded session's video with its frame times")
+    ev.add_argument("--video", metavar="PATH", help="run on a video file instead of the camera")
+    ev.add_argument("--brightness", type=float, default=1.0, help="simulated lighting: intensity scale")
+    ev.add_argument("--gamma", type=float, default=1.0, help="simulated lighting: gamma (>1 darkens shadows)")
+    ev.add_argument("--noise", type=float, default=0.0, help="simulated lighting: sensor noise std (0-255)")
+    ev.add_argument("--duration", type=float, help="stop after this many seconds")
+    ev.add_argument("--no-preview", action="store_true", help="no preview window (lower, cleaner latency)")
+    return parser.parse_args(argv)
+
+
+def open_video_capture(args: argparse.Namespace) -> cv2.VideoCapture:
+    if args.replay:
+        return SessionReplayCapture(args.replay)
     if config.USE_CAMERA:
         cap = cv2.VideoCapture(config.CAMERA_INDEX)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_FRAME_WIDTH)
@@ -103,7 +127,56 @@ def pose_box(person, frame: np.ndarray) -> tuple[int, int, int, int]:
     )
 
 
-def main():
+def config_snapshot() -> dict:
+    """The plain config values, stored with a recorded session."""
+    return {name: value for name, value in vars(config).items()
+            if name.isupper() and isinstance(value, (bool, int, float, str, list, type(None)))}
+
+
+def session_record(frame_count, now, t_capture, t_read, t_send, cap, perf, frame, scene_data, raw_poses,
+                   landmark_frame, run_gestures, detector_ran) -> dict:
+    """One line of a recorded session's frames.jsonl (see core/session_recorder.py)."""
+    persons = []
+    for person in scene_data.persons:
+        persons.append({
+            "id": person.id,
+            "box": [person.x1, person.y1, person.x2, person.y2],
+            "crop": list(person.crop) if person.crop else None,
+            "tracking": person.is_tracking,
+            "frozen": person.frozen,
+            # pose_ran: the pose model ran on this person this frame; raw is None if it found no (own) pose
+            "pose_ran": landmark_frame and person.id in raw_poses,
+            "raw": pose_rows(raw_poses.get(person.id), with_presence=True) if landmark_frame else None,
+            "pose": pose_rows(person.pose),
+            "face": person.face.tracking_active,
+            "hands": person.hands,
+        })
+    return {
+        "i": frame_count,
+        "t": now,
+        "t_capture": t_capture,
+        "t_read": t_read,
+        "t_send": t_send,
+        "dropped": getattr(cap, "dropped", 0),
+        "w": frame.shape[1],
+        "h": frame.shape[0],
+        "luma": round(frame_luma(frame), 2),
+        "landmark_frame": landmark_frame,
+        "gestures_ran": run_gestures,
+        "detector_ran": detector_ran,
+        "stages": {name: round(seconds * 1000, 3) for name, seconds in perf.snapshot().items()},
+        "persons": persons,
+    }
+
+
+def main(args: argparse.Namespace):
+    if args.replay or args.video:
+        config.USE_CAMERA = False
+        if args.video:
+            config.VIDEO_PATH = args.video
+    if args.no_preview:
+        config.SHOW_PREVIEW = False
+
     streamer = UDPStreamer(ip=config.UDP_IP, port=config.UDP_PORT)
     packer = DataPacker()
 
@@ -157,11 +230,26 @@ def main():
     if config.LANDMARK_FRAME_SKIP < 1:
         raise ValueError("LANDMARK_FRAME_SKIP must be at least 1")
 
-    cap = open_video_capture()
+    cap = open_video_capture(args)
     out = None
 
     if config.SAVE_PREVIEW:
         out = open_video_writer(cap, Path(config.SAVE_PATH))
+
+    recorder = None
+    if args.record:
+        source = "replay" if args.replay else ("camera" if config.USE_CAMERA else "video")
+        recorder = SessionRecorder(args.recordings_dir, args.condition, {
+            "notes": args.notes,
+            "source": source,
+            "source_session": str(Path(args.replay).resolve()) if args.replay else None,
+            "video_path": config.VIDEO_PATH if source == "video" else None,
+            "lighting": {"brightness": args.brightness, "gamma": args.gamma, "noise": args.noise},
+            "preview": config.SHOW_PREVIEW,
+            "config": config_snapshot(),
+        }, record_video=not args.no_record_video and not args.replay)
+    # Fixed seed: the same simulated noise on every replay
+    rng = np.random.default_rng(0)
 
     print("Tracking pipeline started. Press 'q' to exit.")
 
@@ -170,6 +258,7 @@ def main():
     frame_count = 0
     last_faces = {}
     send_video = config.VIDEO_DEFAULT_ON
+    t_begin = None
 
     try:
         while cap.isOpened():
@@ -179,6 +268,14 @@ def main():
             success, frame = cap.read()
             if not success:
                 break
+            t_read = time.perf_counter()
+            # When the camera delivered the frame (stamped by the camera reader; a file frame when it was read)
+            t_capture = getattr(cap, "capture_time", 0.0) or t_read
+            t_begin = t_begin or t_read
+            if args.duration and t_read - t_begin > args.duration:
+                break
+            raw_frame = frame
+            frame = simulate_lighting(frame, args.brightness, args.gamma, args.noise, rng)
 
             frame_count += 1
             frame = cv2.flip(frame, 1)
@@ -284,6 +381,9 @@ def main():
             perf.next("Network")
 
             # 2. Add tracking models incrementally
+            # Epoch capture time, so a receiver on this machine can measure the end-to-end latency
+            scene_data.capture_time = int((time.time() - (time.perf_counter() - t_capture)) * 1000)
+            scene_data.processing_time = int((time.perf_counter() - t_capture) * 1000)
             # packer.add(face_data)
             packer.add(scene_data)
             # packer.add(gesture_data) # Ready for other modules
@@ -322,6 +422,13 @@ def main():
                 if config.DEBUG_MODE:
                     #print(f"[NETWORK DEBUG] {packet.decode('utf-8')}")
                     pass
+            t_send = time.perf_counter()
+
+            if recorder is not None:
+                raw_poses = {person.id: raw_pose for person, _, _, raw_pose in active}
+                recorder.add(session_record(frame_count, now, t_capture, t_read, t_send, cap, perf, frame,
+                                            scene_data, raw_poses, landmark_frame, run_gestures,
+                                            person_tracker.ran_detection), raw_frame)
 
             # 5. Preview and Debug overlay
             if config.SHOW_PREVIEW:
@@ -356,8 +463,10 @@ def main():
         cap.release()
         if out is not None:
             out.release()
+        if recorder is not None:
+            recorder.close()
         cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    main()
+    main(parse_args())

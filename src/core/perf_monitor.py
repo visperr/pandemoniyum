@@ -44,6 +44,13 @@ class PerformanceMonitor:
         """The stage `title` did not really run this frame: keep showing the time of its last full run."""
         self.partial.add(title)
 
+    def snapshot(self) -> dict:
+        """Seconds per stage on the current frame so far, including the stage that is still running."""
+        times = dict(self.times)
+        if self.title is not None:
+            times[self.title] = times.get(self.title, 0.0) + (time.perf_counter() - self._mark)
+        return times
+
     def _close_stage(self):
         now = time.perf_counter()
         if self.title is not None:

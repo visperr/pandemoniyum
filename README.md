@@ -47,3 +47,9 @@ When the person detector briefly loses a player, that player's last bounding box
 detectors keep running on the held box, and the person is sent with `"frozen": true`. Players are only held
 if they already own a player slot, and the freeze is capped below `PERSON_MAX_AGE_FRAMES`. Set it to `0`
 to restore the old behaviour.
+
+## Evaluation
+`python src/main.py --record` (run from `src/`) records sessions to `recordings/` for the metrics in
+`src/evaluation/`: keypoint detection rate/error, jitter, gesture delay, missing-keypoint handling,
+latency/update rate and the influence of lighting. See [EVALUATION.md](EVALUATION.md) for the method and
+[EVALUATION_TOOLKIT.md](EVALUATION_TOOLKIT.md) for what was added and a step-by-step guide.

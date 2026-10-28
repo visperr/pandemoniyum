@@ -73,3 +73,6 @@ POSE_HOLD_UNSEEN_HANDS = True        # Uncertain wrists hold their last position
 POSE_MAX_FOREARM_STRETCH = 1.35      # Forearm this many times its learned length = misplaced wrist (held, not followed)
 POSE_MAX_HAND_SPEED = 6.0            # Wrist faster than this (person heights/s) = glitch, unless it persists
 POSE_RESET_SECONDS = 1.0             # Start the filters fresh after this long without a pose
+
+# Evaluation (see EVALUATION.md): `python main.py --record` stores sessions here
+RECORDINGS_DIR = "../recordings"
