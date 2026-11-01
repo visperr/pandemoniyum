@@ -2,12 +2,16 @@
 
 This is the standalone Python tracking backend for PANdemoniYUM[cite: 3]. It utilizes MediaPipe Tasks API to perform multi-modal tracking (Face, Pose, Hand/Gesture) for up to 2 simultaneous users and broadcasts the cleaned data via UDP to Unity.
 
-## Setup Instructions (Development)
+## Dependencies
+
+All dependencies are listed in `requirements.txt` and are fetched using the setup instructions below:
+
+## Setup and Execution Instructions (Development)
 1. Ensure Python 3.10+ is installed.
 2. Create a virtual environment: `python -m venv venv`
 3. Activate it: `venv\Scripts\activate`
 4. Install dependencies: `pip install -r requirements.txt`
-5. Run the orchestrator: `python src/main.py`
+5. Run the program: `cd src && python main.py`
 
 ## Build Instructions (Production)
 To build the headless `.exe` for Unity integration:
@@ -15,41 +19,75 @@ To build the headless `.exe` for Unity integration:
 2. Move the generated `dist/main.exe` into your Unity project's `StreamingAssets/Tracker/` folder.
 3. Copy the `models_data/` folder into the same `Tracker/` directory so the executable can locate the weights.
 
-## Performance
-The person detector and re-identification model use CUDA when available, otherwise Apple's
-Metal Performance Shaders (MPS) on supported Macs, and CPU as a fallback. Person detection
-defaults to a 480-pixel inference size; increase `PERSON_DETECTOR_IMAGE_SIZE` in `src/config.py`
-if you need more detection detail.
+## AI Disclosure
 
-Preview, per-frame debug output, and preview-video encoding are disabled by default to avoid
-adding UI, terminal, and encoder overhead to the tracking loop. Enable `SHOW_PREVIEW`,
-`DEBUG_MODE`, or `SAVE_PREVIEW` in `src/config.py` individually when needed.
+AI Disclosure: During the preparation of this work the author(s) used Google Gemini and Anthropic Claude in order to write code and accompanying documentation for the Python application and the Unity game. After using these tools/services, the author(s) reviewed and edited the content as needed and take(s) full responsibility for the content of the work.” 
 
-Person detection/re-identification and face/pose inference run every second frame by default
-(`PERSON_DETECTION_FRAME_SKIP` and `LANDMARK_FRAME_SKIP`); person positions are predicted and
-the most recent face/pose results are reused between updates. Lower either skip value to `1`
-for per-frame inference at the cost of throughput, or increase it if you need more headroom.
-## Pose smoothing and off-screen limbs
-Pose landmarks pass through `src/core/pose_smoother.py` before they are streamed:
-- Each joint is smoothed with a One Euro filter (strong smoothing when still, little lag when moving), in frame
-  space so that the jittering person box does not leak into the landmarks.
-- Joints that MediaPipe reports with low visibility or places outside the frame (e.g. hands below the webcam
-  image) are not trusted. They are placed at the parent joint plus the learned bone length, holding their last
-  direction and slowly relaxing to "hanging down", and cross-fade back when they re-enter the frame.
-- Only landmarks 0-24 (face, arms, torso, hips) are kept: everything below the hips (25-32) is dropped right
-  after detection, so it is never processed, drawn or sent. The `pose.landmarks` array therefore has 25 entries.
-- Every landmark in the UDP payload now has an extra `"visibility"` field (0 = inferred, 1 = measured).
-- Tune with the `POSE_*` values in `src/config.py`; set `POSE_SMOOTHING_ENABLED = False` for raw output.
+## Task owners
 
-## Detection freeze
-When the person detector briefly loses a player, that player's last bounding box is held for
-`PERSON_FREEZE_FRAMES` frames (default 10) before the lock is released. During the freeze the pose and face
-detectors keep running on the held box, and the person is sent with `"frozen": true`. Players are only held
-if they already own a player slot, and the freeze is capped below `PERSON_MAX_AGE_FRAMES`. Set it to `0`
-to restore the old behaviour.
+- Face Tracking and Augmented Effects: s2389428
+- Body Pose estimation and Motion Tracking: s3416178
+- Multiplayer Detection and Identity Tracking: s3503925
+- Player Interaction and Game Control: s2506890
+- Scene Processing and Real-Time Integration: s2506890
 
-## Evaluation
-`python src/main.py --record` (run from `src/`) records sessions to `recordings/` for the metrics in
-`src/evaluation/`: keypoint detection rate/error, jitter, gesture delay, missing-keypoint handling,
-latency/update rate and the influence of lighting. See [EVALUATION.md](EVALUATION.md) for the method and
-[EVALUATION_TOOLKIT.md](EVALUATION_TOOLKIT.md) for what was added and a step-by-step guide.
+## File structure
+
+```
+PANdemoniYUM/
+├── .gitignore
+├── README.md                  : this file
+├── EVALUATION.md              : metric definitions, recording protocol
+├── EVALUATION_TOOLKIT.md      : how to run the evaluation tools
+├── requirements.txt           : list of project dependencies
+├── build.py                   : compile the program using pyinstaller for unity integration
+├── play_session.py            : for playing a recorded session
+├── play_session.command
+└── src/
+    ├── __init__.py
+    ├── main.py                : entry point: capture → track → send (+ record/replay options)
+    ├── config.py              : all tunable settings
+    ├── utils.py               : utility functions
+    │
+    ├── core/                  : shared machinery
+    │   ├── __init__.py
+    │   ├── base_tracker.py         : abstract tracker interface
+    │   ├── data_packer.py          : builds the UDP payload
+    │   ├── network_streamer.py     : UDP sender to Unity
+    │   ├── latest_frame_capture.py : camera reader, skips stale frames
+    │   ├── pose_smoother.py        : One Euro filter + missing-joint handling
+    │   ├── pose_ownership.py       : keeps each player's pose their own
+    │   ├── perf_monitor.py         : per-stage timings
+    │   ├── session_recorder.py     : records / replays sessions, lighting simulation
+    │   ├── timed_video_writer.py
+    │   └── macos_priority.py
+    │
+    ├── trackers/              : the detection modules
+    │   ├── __init__.py
+    │   ├── person_tracker.py       : YOLO + DeepSort + re-ID, player slots, freeze
+    │   ├── pose_tracker.py         : MediaPipe pose landmarker
+    │   ├── face_tracker.py         : MediaPipe face landmarker
+    │   └── hand_gesture_tracker.py : open/closed hand + hand signs
+    │
+    ├── models/                : data classes sent to Unity
+    │   ├── __init__.py
+    │   ├── base_data.py            : abstract base data class
+    │   ├── scene_data.py           : top-level scene data
+    │   ├── person_data.py          : data per person detected
+    │   ├── pose_data.py            : pose data per person
+    │   └── face_data.py            : face data per person
+    │
+    ├── networks/
+    │   └── osnet.py               : re-identification embedder model
+    │
+    └── evaluation/           : offline metrics from recorded sessions
+        ├── __init__.py
+        ├── session.py            : loads a session into arrays
+        ├── metrics.py            : all metric computations
+        ├── report.py             : report.md + metrics.json per session
+        ├── annotate.py           : click ground-truth keypoints / event onsets
+        ├── missing_keypoints.py  : synthetic occlusion test
+        ├── compare.py            : tables by lighting, distance, subject
+        ├── camera_latency.py     : evaluate camera's own delay
+        └── udp_monitor.py        : rate as received (stands in for Unity)
+```
